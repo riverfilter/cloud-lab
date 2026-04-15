@@ -1,0 +1,78 @@
+############################################
+# Required
+############################################
+
+# Numeric org ID of the TARGET org (not your personal org unless that is
+# genuinely the deployment target). Get it with `gcloud organizations list`
+# while authed against the target org.
+org_id = "REPLACE_ME_ORG_ID"
+
+# Host project ID. The VM, SA, disk, and network live here. Must have
+# billing enabled and exist in the target org above.
+project_id = "REPLACE_ME_PROJECT_ID"
+
+############################################
+# Placement (optional — defaults shown)
+############################################
+
+region = "us-central1"
+zone   = "us-central1-a"
+
+############################################
+# VM sizing (optional — defaults shown)
+############################################
+
+machine_type = "e2-standard-4"  # 4 vCPU / 16 GB
+disk_size_gb = 100
+disk_type    = "pd-balanced"
+
+############################################
+# Security posture (optional)
+############################################
+
+# Default: no public IP, SSH via IAP tunnel.
+# Set true ONLY if you need direct SSH from the internet — firewall
+# still locks 22/tcp to the IAP CIDR regardless.
+allow_public_ip     = false
+enable_confidential = false
+enable_secure_boot  = true
+
+############################################
+# OS / user (optional)
+############################################
+
+vm_username     = "devops"
+dotfiles_repo   = "https://github.com/REPLACE-ME/dotfiles.git"
+dotfiles_branch = "main"
+
+############################################
+# Networking (optional)
+############################################
+
+create_network = true
+subnet_cidr    = "10.10.0.0/24"
+
+# If create_network = false, fill these in instead:
+# network_self_link = "projects/<proj>/global/networks/<name>"
+# subnet_self_link  = "projects/<proj>/regions/<region>/subnetworks/<name>"
+
+############################################
+# IAM scope
+############################################
+
+# "organization" = discover GKE clusters across every project in the org
+#                  (requires org-admin to apply).
+# "project"      = discover only clusters in the host project.
+iam_scope = "organization"
+
+############################################
+# Labels
+############################################
+
+labels = {
+  environment = "mgmt"
+  team        = "platform"
+  service     = "mgmt-vm"
+  cost-center = "platform-ops"
+  managed-by  = "terraform"
+}

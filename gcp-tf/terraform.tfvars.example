@@ -1,0 +1,22 @@
+# Copy to terraform.tfvars and edit before running `terraform apply`.
+
+# REQUIRED: target GCP project.
+project_id = "my-security-lab-123456"
+
+# REQUIRED: lock the control plane down to your workstation(s).
+# Find your current public IP:  curl -s https://ifconfig.me
+# Then use <that-ip>/32. 0.0.0.0/0 is rejected by validation.
+authorized_cidrs = [
+  {
+    cidr_block   = "203.0.113.42/32"
+    display_name = "my-workstation"
+  },
+]
+
+# Optional overrides — defaults are fine for most lab use.
+# region            = "us-central1"
+# zone              = "us-central1-a"
+# cluster_name      = "sec-lab"
+# node_machine_type = "e2-small"
+# node_count        = 1
+# use_spot_vms      = true

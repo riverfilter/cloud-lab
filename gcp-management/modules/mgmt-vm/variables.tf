@@ -1,0 +1,16 @@
+variable "project_id" { type = string }
+variable "zone" { type = string }
+variable "name_prefix" { type = string }
+variable "machine_type" { type = string }
+variable "disk_size_gb" { type = number }
+variable "disk_type" { type = string }
+variable "image_family" { type = string }
+variable "image_project" { type = string }
+variable "network_self_link" { type = string }
+variable "subnet_self_link" { type = string }
+variable "service_account" { type = string }
+variable "allow_public_ip" { type = bool }
+variable "enable_confidential" { type = bool }
+variable "enable_secure_boot" { type = bool }
+variable "startup_script" { type = string }
+variable "labels" { type = map(string) }
