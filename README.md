@@ -1,6 +1,7 @@
 # cloud-lab
 
-Personal cloud security lab. Terraform stacks that stand up disposable
+cloud security lab tooling. 
+Terraform stacks that stand up disposable
 infrastructure for hands-on research: running agents, testing
 configurations, breaking things in controlled environments.
 
@@ -16,7 +17,7 @@ blast radius. Bring up only what you need; tear it down when you're done.
 
 Recommended order: apply `gcp-management-tf` first, SSH into the
 management VM, then drive `gcp-gke-tf` from there so state and
-credentials stay off the laptop.
+credentials stay contained to the management server. 
 
 ## Prerequisites
 
