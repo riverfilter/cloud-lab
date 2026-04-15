@@ -13,6 +13,6 @@
 # terraform {
 #   backend "gcs" {
 #     bucket = "REPLACE-ME-tfstate-bucket"
-#     prefix = "gcp-management/mgmt-vm"
+#     prefix = "gcp-management-tf/mgmt-vm"
 #   }
 # }

@@ -1,4 +1,4 @@
-# gcp-tf — Private GKE Security Lab
+# gcp-gke-tf — Private GKE Security Lab
 
 Minimal, cost-optimized, **private** GKE cluster for a security research lab on GCP. Designed to host SentinelOne agents (DaemonSet + StatefulSet) alongside intentionally vulnerable workloads (misconfigured nginx, DVWA, etc.) without exposing those workloads to the internet.
 
