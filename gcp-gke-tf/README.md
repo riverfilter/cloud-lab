@@ -1,13 +1,13 @@
 # gcp-gke-tf — Private GKE Security Lab
 
-Minimal, cost-optimized, **private** GKE cluster for a security research lab on GCP. Designed to host SentinelOne agents (DaemonSet + StatefulSet) alongside intentionally vulnerable workloads (misconfigured nginx, DVWA, etc.) without exposing those workloads to the internet.
+Minimal, cost-optimized, **private** GKE cluster for a security research lab on GCP. Designed to host security agents (an EDR DaemonSet plus a cluster-level helper StatefulSet) alongside intentionally vulnerable workloads (misconfigured nginx, DVWA, etc.) without exposing those workloads to the internet.
 
 ## What gets deployed
 
 - Dedicated VPC + subnet with secondary ranges for pods/services
 - Cloud Router + Cloud NAT (egress only — no inbound exposure)
 - Zonal private GKE cluster (REGULAR release channel, Dataplane V2)
-- One node pool, 1x `e2-small` Spot VM by default, 20 GB pd-standard
+- One node pool, 2x `e2-small` Spot VMs by default, 20 GB pd-standard each
 - Dedicated least-privilege node service account
 - Workload Identity, Shielded Nodes, legacy metadata disabled
 - Public control plane endpoint **restricted** to `authorized_cidrs`
@@ -70,21 +70,21 @@ terraform destroy
 | Item                                          | Approx USD/mo |
 |-----------------------------------------------|---------------|
 | Zonal GKE control plane                       | ~$72          |
-| 1x e2-small Spot VM + 20 GB pd-standard       | ~$4–6         |
+| 2x e2-small Spot VM + 20 GB pd-standard each  | ~$8–12        |
 | Cloud NAT (1 gateway, minimal traffic)        | ~$1–3         |
 | Logs/metrics (default free tier typical)      | ~$0–2         |
-| **Total (1 node, Spot)**                      | **~$80/mo**   |
+| **Total (2 nodes, Spot)**                     | **~$85/mo**   |
 
-The GKE control plane is the dominant cost. GKE offers a free tier that historically covers one zonal cluster per billing account — if yours applies, monthly cost drops to well under $20. Switching `use_spot_vms = false` adds ~$8/mo per node.
+The GKE control plane is the dominant cost. GKE offers a free tier that historically covers one zonal cluster per billing account — if yours applies, monthly cost drops to well under $25. Switching `use_spot_vms = false` adds ~$8/mo per node.
 
-## SentinelOne expectation
+## Agent sizing note
 
-This module does **not** install SentinelOne — you do that via your own Helm chart or manifests. The node pool is sized assuming:
+This module does **not** install any specific agent — you bring your own via Helm chart or manifests. The node pool is sized assuming a typical EDR / workload-monitoring agent:
 
 - 1 agent pod per node (DaemonSet) consuming ~500m CPU / 512 Mi–1 GiB memory
 - 1 cluster-level helper pod (StatefulSet)
 
-`e2-small` (2 vCPU burstable, 2 GiB RAM) leaves enough headroom for SentinelOne plus a handful of lightweight lab pods. If you see OOMKilled agent pods or `MemoryPressure` on nodes, bump `node_machine_type` to `e2-medium`.
+`e2-small` (2 vCPU burstable, 2 GiB RAM) leaves enough headroom for an agent of that size plus a handful of lightweight lab pods. If you see OOMKilled agent pods or `MemoryPressure` on nodes, bump `node_machine_type` to `e2-medium`.
 
 ## Warning — vulnerable workloads
 

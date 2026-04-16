@@ -13,7 +13,9 @@ blast radius. Bring up only what you need; tear it down when you're done.
 | Directory | Purpose |
 |-----------|---------|
 | [`gcp-management-tf/`](./gcp-management-tf) | Debian 12 jump box on GCE with Terraform/kubectl/gcloud/Docker preinstalled. Read-only org discovery SA so it can pull kubeconfigs for every GKE cluster the operator can see. SSH via IAP only. |
-| [`gcp-gke-tf/`](./gcp-gke-tf) | Minimal private GKE cluster (1x e2-small Spot node by default) intended to host security agents alongside deliberately vulnerable workloads. Private nodes, authorized-networks control plane, Dataplane V2. |
+| [`gcp-gke-tf/`](./gcp-gke-tf) | Minimal private GKE cluster (2x e2-small Spot nodes by default) intended to host security agents alongside deliberately vulnerable workloads. Private nodes, authorized-networks control plane, Dataplane V2. |
+| [`aws-eks-tf/`](./aws-eks-tf) | Minimal private EKS cluster (2x t3.small Spot nodes by default) intended to host security agents alongside deliberately vulnerable workloads. Private nodes, CIDR-restricted public endpoint, IMDSv2-only, VPC CNI NetworkPolicy, KMS-encrypted secrets. |
+| [`azure-aks-tf/`](./azure-aks-tf) | Minimal AKS cluster (2x Standard_B2s on-demand nodes by default) intended to host security agents alongside deliberately vulnerable workloads. Private nodes behind NAT Gateway, CIDR-restricted public API server, Azure CNI Overlay + Cilium dataplane, AAD-only auth with Azure RBAC for Kubernetes. |
 
 Recommended order: apply `gcp-management-tf` first, SSH into the
 management VM, then drive `gcp-gke-tf` from there so state and

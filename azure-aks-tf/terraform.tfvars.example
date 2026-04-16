@@ -1,0 +1,41 @@
+# Copy to terraform.tfvars and edit before running `terraform apply`.
+
+# REQUIRED: target Azure subscription GUID.
+# Find with: az account show --query id -o tsv
+subscription_id = "00000000-0000-0000-0000-000000000000"
+
+# REQUIRED: lock the API server down to your workstation(s).
+# Find your current public IP:  curl -s https://ifconfig.me
+# Then use <that-ip>/32. 0.0.0.0/0 is rejected by validation.
+authorized_cidrs = [
+  "203.0.113.42/32",
+]
+
+# REQUIRED: AAD group object IDs (GUIDs) that get cluster-admin via Azure RBAC.
+# local_account_disabled is true by default, so without at least one admin
+# group nobody can kubectl into the cluster after apply. Find yours with:
+#   az ad group show --group <name> --query id -o tsv
+admin_group_object_ids = [
+  "00000000-0000-0000-0000-000000000000",
+]
+
+# Optional overrides — defaults are fine for most lab use.
+# location                   = "eastus"
+# resource_group_name        = "sec-lab-rg"      # defaults to ${cluster_name}-rg
+# cluster_name               = "sec-lab"
+# kubernetes_version         = "1.30"
+# sku_tier                   = "Free"            # Standard adds $73/mo for 99.95% SLA
+# node_vm_size               = "Standard_B2s"
+# node_count                 = 2
+# node_disk_size_gb          = 30
+# use_spot_vms               = false             # true => adds separate Spot user pool (see README)
+# spot_node_vm_size          = "Standard_B2s"
+# spot_node_count            = 1
+# local_account_disabled     = true
+# vnet_cidr                  = "10.40.0.0/16"
+# nodes_subnet_cidr          = "10.40.0.0/20"
+# pod_cidr                   = "10.244.0.0/16"
+# service_cidr               = "10.41.0.0/16"
+# enable_diagnostics         = false
+# diagnostics_retention_days = 30
+# enable_monitor_metrics     = false

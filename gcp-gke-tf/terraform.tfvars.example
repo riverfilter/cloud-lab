@@ -18,5 +18,5 @@ authorized_cidrs = [
 # zone              = "us-central1-a"
 # cluster_name      = "sec-lab"
 # node_machine_type = "e2-small"
-# node_count        = 1
+# node_count        = 2
 # use_spot_vms      = true

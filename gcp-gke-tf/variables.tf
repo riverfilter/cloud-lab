@@ -32,7 +32,7 @@ variable "cluster_name" {
 }
 
 variable "node_machine_type" {
-  description = "Machine type for node pool VMs. e2-small = 2 vCPU / 2 GiB, adequate for SentinelOne (~500m/512Mi-1Gi) plus a few lightweight lab pods."
+  description = "Machine type for node pool VMs. e2-small = 2 vCPU / 2 GiB, adequate for a typical EDR agent DaemonSet (~500m CPU / 512 Mi–1 GiB memory) plus a few lightweight lab pods."
   type        = string
   default     = "e2-small"
 }

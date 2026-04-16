@@ -24,8 +24,9 @@ resource "google_container_cluster" "this" {
 
   # Dataplane V2 (eBPF) is free and includes network policy enforcement. Leaving
   # enforcement ON is desirable here because the lab will host intentionally
-  # vulnerable pods — cheap defense-in-depth. SentinelOne's DaemonSet runs with
-  # hostNetwork/privileged and is unaffected by pod-level NetworkPolicies.
+  # vulnerable pods — cheap defense-in-depth. Host-privileged EDR DaemonSets
+  # typically run with hostNetwork/privileged and are unaffected by pod-level
+  # NetworkPolicies, so this does not conflict with an agent install.
   datapath_provider       = "ADVANCED_DATAPATH"
   enable_l4_ilb_subsetting = false
 
@@ -109,11 +110,11 @@ resource "google_container_cluster" "this" {
 
 # Machine type rationale: e2-small (2 vCPU burstable, 2 GiB RAM).
 # - e2-micro (1 GiB) is too tight: kubelet+system pods consume ~0.7 GiB, leaving
-#   <300 MiB, which SentinelOne alone (often 512 Mi–1 GiB) can exhaust.
+#   <300 MiB, which a typical EDR DaemonSet (often 512 Mi–1 GiB) can exhaust.
 # - e2-medium (4 GiB) costs ~2x with no gain for a handful of lab pods.
-# e2-small on Spot is ~$3-4/mo list and comfortably fits SentinelOne + a few
+# e2-small on Spot is ~$3-4/mo list and comfortably fits an EDR agent + a few
 # lightweight vulnerable pods. Upgrade to e2-medium only if kubectl shows
-# MemoryPressure or SentinelOne CrashLoopBackOff with OOMKilled.
+# MemoryPressure or the agent CrashLoopBackOffs with OOMKilled.
 resource "google_container_node_pool" "primary" {
   name     = "${var.cluster_name}-primary"
   cluster  = google_container_cluster.this.id
