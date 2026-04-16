@@ -10,9 +10,6 @@ whole.
 
 ## Operating principles
 
-These supersede any "harmonize everything" implications in older
-versions of this document.
-
 1. **The three clusters are siblings, not mirrors.** A shared threat
    model (private nodes, restricted control plane, vulnerable-pod
    ready) and a shared cost posture (minimal footprint, Spot where
@@ -21,7 +18,7 @@ versions of this document.
    EKS expresses it via `enabled_cluster_log_types`, that divergence
    stays. We do NOT chase identical variable names, matching flow-log
    defaults, or a canonical tag schema for its own sake.
-2. **1–2 users, 1–2 pods per cluster, not all running at once.** The
+2. **4-8 users, 4–8 pods per cluster, aside from the expected daemonsetnot all running at once.** The
    target footprint is tiny and intermittent. A cluster is routinely
    destroyed when idle and re-applied when needed. Any design
    decision that breaks under `terraform destroy` + re-apply (state
