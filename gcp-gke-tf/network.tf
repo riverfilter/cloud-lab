@@ -38,8 +38,9 @@ resource "google_compute_router" "router" {
 }
 
 # Cloud NAT lets private nodes pull container images, reach the GKE control
-# plane, and allows SentinelOne agents to reach the SentinelOne management cloud.
-# No inbound exposure is created by NAT itself.
+# plane, and allows any in-cluster agent (EDR, log shipper, etc.) to reach
+# its external management/ingest endpoints. No inbound exposure is created
+# by NAT itself.
 resource "google_compute_router_nat" "nat" {
   name                               = "${var.cluster_name}-nat"
   router                             = google_compute_router.router.name

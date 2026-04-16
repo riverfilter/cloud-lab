@@ -1,0 +1,29 @@
+# Copy to terraform.tfvars and edit before running `terraform apply`.
+
+# REQUIRED: lock the control plane down to your workstation(s).
+# Find your current public IP:  curl -s https://ifconfig.me
+# Then use <that-ip>/32. 0.0.0.0/0 is rejected by validation.
+authorized_cidrs = [
+  "203.0.113.42/32",
+]
+
+# REQUIRED (strongly recommended): IAM principal to grant cluster-admin via
+# an EKS access entry. Without this, no one can kubectl into the cluster
+# after apply. Get yours with: aws sts get-caller-identity --query Arn
+cluster_admin_principal_arn = "arn:aws:iam::123456789012:user/you"
+
+# Optional overrides — defaults are fine for most lab use.
+# region                           = "us-east-1"
+# cluster_name                     = "sec-lab"
+# cluster_version                  = "1.31"
+# node_instance_type               = "t3.small"
+# node_count                       = 2
+# node_disk_size_gb                = 20
+# use_spot_instances               = true
+# vpc_cidr                         = "10.30.0.0/16"
+# availability_zone_count          = 2
+# single_nat_gateway               = true
+# enable_vpc_flow_logs             = false
+# flow_logs_retention_days         = 7
+# control_plane_log_retention_days = 7
+# enable_ebs_csi_driver            = true
