@@ -1,0 +1,9 @@
+# Copy to backend.hcl and fill in from bootstrap-state/azure outputs.
+# backend.hcl is gitignored.
+#
+#   terraform init -backend-config=backend.hcl -migrate-state
+resource_group_name  = "cloud-lab-tfstate-rg"
+storage_account_name = "REPLACEMEtfstorage"
+container_name       = "tfstate"
+key                  = "azure-aks-tf/sec-lab.tfstate"
+use_azuread_auth     = true

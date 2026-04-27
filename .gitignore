@@ -21,6 +21,12 @@ crash.*.log
 *.tfvars.json
 !*.tfvars.example
 
+# Backend config — contains bucket / storage account / KMS key IDs that
+# are operator-specific. Templates live as backend.hcl.example; the
+# operator copies and fills them per-stack.
+backend.hcl
+!backend.hcl.example
+
 # Override files (local-only customizations)
 override.tf
 override.tf.json

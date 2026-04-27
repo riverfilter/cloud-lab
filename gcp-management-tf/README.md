@@ -92,6 +92,46 @@ sudo -iu devops
 kubectl config get-contexts
 ```
 
+## Cross-stack apply order
+
+The mgmt VM federates into AWS IAM roles and Azure AAD apps that live
+in the cluster stacks (`aws-eks-tf`, `azure-aks-tf`). Those stacks need
+inputs from this stack (`service_account_unique_id`, `nat_public_ip`),
+and this stack consumes outputs from those stacks
+(`mgmt_vm_role_arn`, `mgmt_vm_app_client_id`, `mgmt_vm_tenant_id`).
+That dependency cycle resolves with a two-pass apply:
+
+1. **First pass — mgmt-tf alone.** Apply this stack with the four
+   federation maps empty (`aws_role_arns = {}`, `azure_federated_apps = {}`,
+   and the new `aws_eks_states = {}` / `azure_aks_states = {}`).
+   Capture `service_account_unique_id` and `nat_public_ip` from the
+   outputs.
+2. **Cluster stacks.** Apply each `aws-eks-tf` / `azure-aks-tf`
+   workspace with `mgmt_vm_gcp_sa_unique_id` set to the unique_id from
+   step 1, and append `<nat_public_ip>/32` to each stack's
+   `authorized_cidrs` so this VM can reach the cluster control plane.
+   Each cluster stack writes `mgmt_vm_role_arn` /
+   `mgmt_vm_app_client_id` / `mgmt_vm_tenant_id` into its own state.
+3. **Second pass — mgmt-tf again.** Feed the cluster outputs back in
+   one of two ways:
+   - **Remote-state wiring (preferred).** Set `aws_eks_states` and
+     `azure_aks_states` in tfvars to the backend coordinates of each
+     cluster stack's remote state. `terraform_remote_state` data
+     sources read the cluster outputs at plan time; locals in
+     `main.tf` derive the effective federation maps and pass them to
+     the bootstrap template. This eliminates the paste-dance.
+   - **Explicit-map paste (legacy).** Paste the cluster outputs into
+     `aws_role_arns` / `azure_federated_apps` directly. Required when
+     the cluster stacks store state in a backend this stack does not
+     wire (currently S3 + azurerm only).
+   Either way, re-apply re-renders `/etc/mgmt/federated-principals.json`
+   on the VM via cloud-init.
+
+The two paths are mergeable — entries from `aws_eks_states` are
+combined with `aws_role_arns`, and explicit entries win on key
+collision. That lets you point most labels at remote state while
+overriding a single label inline.
+
 ## Refreshing kubeconfigs
 
 First boot populates `~/.kube/config` automatically. To re-discover after

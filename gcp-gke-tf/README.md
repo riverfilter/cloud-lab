@@ -59,6 +59,24 @@ kubectl get nodes
 
 Because the cluster has a public control plane endpoint with authorized networks, `kubectl` works from any source IP listed in `authorized_cidrs`. The nodes themselves have no public IPs.
 
+## Granting the mgmt VM in-cluster admin
+
+The mgmt VM (from `gcp-management-tf`) runs with a GCP service account that already holds `roles/container.clusterViewer` org-wide (see `gcp-management-tf/modules/iam/main.tf`). That IAM role plus the mgmt VM's egress IP being in `authorized_cidrs` is enough to *authenticate* against the cluster's public endpoint, but `clusterViewer` only grants the IAM-side discovery needed to call `gcloud container clusters get-credentials`. It does NOT grant any in-cluster RBAC — every `kubectl get pods` call from the mgmt VM will return `forbidden` until a Kubernetes `ClusterRoleBinding` authorizes the SA subject.
+
+Run this once after the first apply, from a session that already has cluster-admin (typically your workstation):
+
+```bash
+kubectl create clusterrolebinding mgmt-vm-admin \
+  --clusterrole=cluster-admin \
+  --user=<mgmt-vm-sa-email>
+```
+
+The `<mgmt-vm-sa-email>` value is the `service_account_email` output of the `gcp-management-tf` stack. GKE maps the inbound OAuth token's identity onto that SA email, so `--user=<email>` is the correct subject (not a `ServiceAccount` kind — the Kubernetes `ServiceAccount` type is cluster-internal and unrelated).
+
+This is a manual post-apply step. An in-cluster manifest applied by this Terraform stack itself (via the `kubernetes` provider + a `kubernetes_cluster_role_binding` resource) would be cleaner, but adds a provider dependency that has to talk to the cluster's API server from wherever `terraform apply` runs — a stretch goal tracked in the project roadmap, not implemented here.
+
+Scope the binding down if `cluster-admin` is broader than needed for your workflow — read-only access for observation-style lab work maps to the built-in `view` ClusterRole; anything that needs to apply manifests wants `edit` or `admin`.
+
 ## Tear down
 
 ```

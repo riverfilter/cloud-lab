@@ -209,8 +209,8 @@ resource "azurerm_kubernetes_cluster" "this" {
 # "aksManagedAutoUpgradeSchedule" configurations are the two that matter;
 # we use the umbrella "default" here for simplicity.
 resource "azurerm_kubernetes_cluster_maintenance_configuration" "default" {
-  name                   = "default"
-  kubernetes_cluster_id  = azurerm_kubernetes_cluster.this.id
+  name                  = "default"
+  kubernetes_cluster_id = azurerm_kubernetes_cluster.this.id
 
   allowed {
     day   = "Saturday"
@@ -292,8 +292,8 @@ resource "azurerm_kubernetes_cluster_node_pool" "spot" {
   node_labels = merge(
     var.tags,
     {
-      "lab.purpose"                             = "security-research"
-      "kubernetes.azure.com/scalesetpriority"   = "spot"
+      "lab.purpose"                           = "security-research"
+      "kubernetes.azure.com/scalesetpriority" = "spot"
     }
   )
 

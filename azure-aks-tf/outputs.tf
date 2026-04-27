@@ -13,8 +13,8 @@ output "node_resource_group_name" {
   value       = azurerm_kubernetes_cluster.this.node_resource_group
 }
 
-output "location" {
-  description = "Azure region the cluster lives in."
+output "cluster_location" {
+  description = "Azure region of the cluster. Named `cluster_location` (not `location`) for cross-stack symmetry with gcp-gke-tf and aws-eks-tf — `refresh-kubeconfigs` reads one shape across all three."
   value       = azurerm_resource_group.this.location
 }
 
@@ -63,4 +63,14 @@ output "nat_gateway_public_ip" {
 output "kubectl_configure_command" {
   description = "Run this to populate ~/.kube/config for the cluster. Uses AAD-backed auth because local_account_disabled is true by default."
   value       = "az aks get-credentials --resource-group ${azurerm_resource_group.this.name} --name ${azurerm_kubernetes_cluster.this.name} --overwrite-existing"
+}
+
+output "mgmt_vm_app_client_id" {
+  description = "AAD App client_id the mgmt VM federates into via Workload Identity Federation. Null when mgmt_vm_gcp_sa_unique_id is unset. Feed this to the mgmt VM's `az login --federated-token` invocation."
+  value       = try(azuread_application.mgmt_vm[0].client_id, null)
+}
+
+output "mgmt_vm_tenant_id" {
+  description = "AAD tenant_id the mgmt VM federates into. Pulled from the current azurerm client config so the operator does not have to look it up. Always populated (tenant_id is knowable regardless of whether federation is enabled)."
+  value       = data.azurerm_client_config.current.tenant_id
 }

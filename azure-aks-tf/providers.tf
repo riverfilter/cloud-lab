@@ -17,3 +17,15 @@ provider "azurerm" {
     # Neither is load-bearing here (no Key Vault, RG is dedicated).
   }
 }
+
+# azuread inherits tenant + auth from the same azure-cli / managed-identity /
+# OIDC credential chain as azurerm. No explicit configuration needed — and
+# deliberately none provided, to keep tenant/client secrets out of the stack.
+# Only consumed when var.mgmt_vm_gcp_sa_unique_id is set (item 1 of the
+# project roadmap: cross-cloud federated identity).
+provider "azuread" {
+  # Pin tenant to the same one azurerm resolved, so the AAD App and federated
+  # credential never land in an operator's home tenant when it differs from
+  # the AKS subscription's tenant. data source is declared in iam.tf.
+  tenant_id = data.azurerm_client_config.current.tenant_id
+}

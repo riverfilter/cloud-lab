@@ -1,0 +1,10 @@
+# Copy to backend.hcl and fill in from bootstrap-state/aws outputs.
+# backend.hcl is gitignored.
+#
+#   terraform init -backend-config=backend.hcl -migrate-state
+bucket       = "REPLACE-ME-cloud-lab-tfstate"
+key          = "aws-eks-tf/sec-lab.tfstate"
+region       = "us-east-1"
+encrypt      = true
+kms_key_id   = "arn:aws:kms:us-east-1:REPLACE-ME:key/REPLACE-ME"
+use_lockfile = true

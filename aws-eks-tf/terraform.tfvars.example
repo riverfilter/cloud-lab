@@ -5,12 +5,21 @@
 # Then use <that-ip>/32. 0.0.0.0/0 is rejected by validation.
 authorized_cidrs = [
   "203.0.113.42/32",
+  # "X.X.X.X/32",  # mgmt-vm-gcp — from gcp-management-tf output nat_public_ip
 ]
 
-# REQUIRED (strongly recommended): IAM principal to grant cluster-admin via
-# an EKS access entry. Without this, no one can kubectl into the cluster
-# after apply. Get yours with: aws sts get-caller-identity --query Arn
-cluster_admin_principal_arn = "arn:aws:iam::123456789012:user/you"
+# REQUIRED: IAM principal ARNs to grant cluster-admin via EKS access entries.
+# Must be non-empty — `bootstrap_cluster_creator_admin_permissions = false`,
+# so without at least one entry no one can kubectl into the cluster.
+# Typically two entries:
+#   1. Your workstation IAM user/role ARN — `aws sts get-caller-identity --query Arn`
+#   2. The mgmt VM's federated role ARN — the `mgmt_vm_role_arn` output of this
+#      stack after the first apply, or pre-compute as
+#      arn:aws:iam::<account>:role/<cluster_name>-mgmt-vm
+cluster_admin_principal_arns = [
+  "arn:aws:iam::123456789012:user/you",
+  # "arn:aws:iam::123456789012:role/sec-lab-mgmt-vm",  # from mgmt_vm_role_arn output
+]
 
 # Optional overrides — defaults are fine for most lab use.
 # region                           = "us-east-1"

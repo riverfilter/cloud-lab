@@ -61,6 +61,18 @@ under it.
 
 ## P0 — Multi-cloud kubectl from the management VM
 
+**Arc status: all five design items implemented; each with follow-up
+subsections capturing blocking and robustness findings from
+post-implementation review.** The functional path — mgmt VM → federated
+identity → static egress IP allowlisted → admin access on each cluster
+→ `refresh-kubeconfigs` enumerates GKE/EKS/AKS → persistent kubectl
+sessions — is in place end-to-end, but 11 blocking + 31 robustness
+items across Items 1-5 and the P0-checklist remain open before this
+arc is production-quality. See per-item `### P0 Item N — follow-up
+from implementation review` subsections and the remaining unchecked
+boxes in P0-checklist (preflight subcommand; cluster-stack output
+renames; `terraform_remote_state` data-source wiring).
+
 This is the headline arc. Everything under this section exists to
 make a single command — `refresh-kubeconfigs` on the mgmt VM —
 produce a working `~/.kube/config` that can talk to any combination
@@ -83,6 +95,10 @@ cluster stacks are routine, and local state breaks under that
 workflow.
 
 ### 1. Cross-cloud federated identity for the management VM
+
+**Status:** Complete with caveats. Implemented across all three stacks;
+0 blocking + 6 robustness follow-ups tracked in `P0 Item 1 — follow-up
+from implementation review`.
 
 **Why it matters.** The mgmt VM needs to call `aws eks
 describe-cluster` and `az aks get-credentials` from inside GCP,
@@ -291,6 +307,12 @@ federated principals (see item 4).
 
 ### 2. Mgmt VM egress IP must be in every cluster's `authorized_cidrs`
 
+**Status:** Complete with caveats. Static NAT IP reserved and exposed
+as `nat_public_ip`; tfvars examples updated. 2 blocking + 4 robustness
+follow-ups tracked in `P0 Item 2 — follow-up from implementation
+review`. Sub-item 3 (`refresh-kubeconfigs --preflight`) explicitly
+deferred and still open in the P0-checklist.
+
 **Why it matters.** Each cluster's control-plane endpoint is
 CIDR-restricted. Today `authorized_cidrs` defaults to empty in
 every cluster stack, and the READMEs say "put your workstation /32
@@ -366,6 +388,14 @@ authorized_cidrs = [
    reachable.
 
 ### 3. Cluster-admin bootstrap must accept the mgmt VM's federated principal
+
+**Status:** Complete with caveats. EKS admin list consolidated with
+validation + `for_each`; Item 1's separate `aws_eks_access_entry.mgmt_vm`
+absorbed into the list; GKE in-cluster RBAC documented in
+`gcp-gke-tf/README.md` (option (1)); AKS already satisfied via Item 1.
+1 blocking + 4 robustness follow-ups tracked in `P0 Item 3 — follow-up
+from implementation review`. Stretch-goal option (2) (Kubernetes
+provider for GKE binding) deferred.
 
 **Why it matters.** Item 1 creates the federated AWS role / AAD SP,
 but each cluster stack's admin-bootstrap variable today accepts a
@@ -456,6 +486,15 @@ be cleaner but adds a Kubernetes provider dependency; leave as a
 stretch goal.)
 
 ### 4. `refresh-kubeconfigs` must discover EKS and AKS clusters
+
+**Status:** Complete with caveats. All three sub-tasks (4a CLI installs,
+4b federated-principals.json + Terraform variables, 4c refresh-script
+rewrite) landed together with P0-sessions wiring and P0-azsubs
+multi-subscription support. 0 blocking + 6 robustness follow-ups
+tracked in `P0 Item 4 — follow-up from implementation review` — the
+three originally-blocking items (`RuntimeDirectory=mgmt` token
+persistence, `az login --federated-token` leak via `/proc/*/cmdline`,
+profile.d exports only visible in login shells) are now resolved.
 
 **Why it matters.** Today the script at
 `gcp-management-tf/scripts/bootstrap.sh.tpl:293-356` iterates GCP
@@ -551,30 +590,21 @@ CONFIG=/etc/mgmt/federated-principals.json
 # ... existing GKE loop ...
 
 # --- AWS ---
+# Credentials are NOT minted inline here — that pattern broke persistent
+# kubectl sessions (env vars vanish when the script exits). See P0-sessions
+# below: a systemd timer refreshes a GCP SA ID token file, and an
+# ~/.aws/config profile with `web_identity_token_file` lets the AWS SDK
+# pick it up on every call. This block only does discovery.
 if [[ -f "$CONFIG" ]] && command -v aws >/dev/null; then
   jq -r '.aws_role_arns | to_entries[] | "\(.key) \(.value)"' "$CONFIG" | \
   while read -r label role_arn; do
     echo "[refresh-kubeconfigs] AWS: $label ($role_arn)"
-    # Fetch GCP SA ID token (the VM's attached SA signs this)
-    id_token=$(curl -fsSL -H "Metadata-Flavor: Google" \
-      "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/identity?audience=sts.amazonaws.com")
-    # Exchange for temporary AWS creds
-    creds=$(aws sts assume-role-with-web-identity \
-      --role-arn "$role_arn" \
-      --role-session-name "mgmt-vm-$label" \
-      --web-identity-token "$id_token" \
-      --duration-seconds 3600 \
-      --query 'Credentials' --output json)
-    export AWS_ACCESS_KEY_ID=$(jq -r '.AccessKeyId' <<<"$creds")
-    export AWS_SECRET_ACCESS_KEY=$(jq -r '.SecretAccessKey' <<<"$creds")
-    export AWS_SESSION_TOKEN=$(jq -r '.SessionToken' <<<"$creds")
-
-    # Discover clusters in every region (or a configured subset)
+    # Discover clusters in every configured region
     for region in us-east-1 us-west-2; do
-      mapfile -t CLUSTERS < <(aws eks list-clusters --region "$region" --query 'clusters[]' --output text 2>/dev/null)
+      mapfile -t CLUSTERS < <(AWS_PROFILE="mgmt-vm-$label" aws eks list-clusters --region "$region" --query 'clusters[]' --output text 2>/dev/null)
       for c in "${CLUSTERS[@]}"; do
         [[ -z "$c" ]] && continue
-        aws eks update-kubeconfig --region "$region" --name "$c" \
+        AWS_PROFILE="mgmt-vm-$label" aws eks update-kubeconfig --region "$region" --name "$c" \
           --alias "aws-$label-$c" >/dev/null || true
       done
     done
@@ -582,18 +612,15 @@ if [[ -f "$CONFIG" ]] && command -v aws >/dev/null; then
 fi
 
 # --- Azure ---
+# No `az login` / `az logout` here — that pattern wipes credentials the
+# moment the script finishes. See P0-sessions: the bootstrap exports
+# AZURE_FEDERATED_TOKEN_FILE / AZURE_CLIENT_ID / AZURE_TENANT_ID via
+# /etc/profile.d, and `kubelogin convert-kubeconfig -l workloadidentity`
+# reads those at kubectl time. This block only does discovery.
 if [[ -f "$CONFIG" ]] && command -v az >/dev/null; then
   jq -r '.azure_federated_apps | to_entries[] | "\(.key) \(.value.client_id) \(.value.tenant_id)"' "$CONFIG" | \
   while read -r label client_id tenant_id; do
     echo "[refresh-kubeconfigs] Azure: $label"
-    id_token=$(curl -fsSL -H "Metadata-Flavor: Google" \
-      "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/identity?audience=api://AzureADTokenExchange")
-    az login --service-principal \
-      --username "$client_id" \
-      --tenant "$tenant_id" \
-      --federated-token "$id_token" \
-      --allow-no-subscriptions >/dev/null
-
     mapfile -t ROWS < <(az aks list --query '[].{n:name,g:resourceGroup}' -o tsv)
     for row in "${ROWS[@]}"; do
       [[ -z "$row" ]] && continue
@@ -601,10 +628,9 @@ if [[ -f "$CONFIG" ]] && command -v az >/dev/null; then
       rg=$(awk '{print $2}' <<<"$row")
       az aks get-credentials --name "$name" --resource-group "$rg" \
         --context "azure-$label-$name" --overwrite-existing >/dev/null || true
-      # Convert to kubelogin format (local_account_disabled = true)
-      kubelogin convert-kubeconfig -l azurecli >/dev/null || true
+      # Convert to kubelogin workloadidentity mode (reads env vars, no az call at token time)
+      kubelogin convert-kubeconfig -l workloadidentity >/dev/null || true
     done
-    az logout >/dev/null 2>&1 || true
   done
 fi
 
@@ -617,6 +643,18 @@ cloud — a cluster that isn't running doesn't block refreshes of the
 clusters that are.
 
 ### 5. Remote state
+
+**Status:** Complete with caveats. Three `bootstrap-state/<cloud>/`
+stacks landed (GCS + S3/KMS with `use_lockfile` + Azure Storage with
+AAD-only auth) plus commented `backend.tf` + `backend.hcl.example`
+in every sibling stack. 0 blocking + 5 robustness follow-ups tracked
+in `P0 Item 5 — follow-up from implementation review`. The three
+blocking items (`prevent_destroy` on state buckets / KMS / storage
+account, Terraform 1.10+ floor on sibling `versions.tf`, explicit CMK
+key policy granting operator principals) plus the soft-delete
+retention robustness item have been addressed. Conversion of the
+paste-dance to `terraform_remote_state` data sources is still owed
+(tracked in P0-checklist Cross-stack / tfvars).
 
 **Why it matters.** Cluster stacks are routinely destroyed and
 re-applied under this operating model. Local state on the mgmt VM
@@ -669,6 +707,767 @@ Account + blob lease).
 
 Uncomment each sibling stack's `backend.tf` after the bootstrap is
 applied, paste the matching snippet.
+
+### P0-checklist. Execution tasks for the arc
+
+Items 1–5 above describe the *design*. The checkboxes here track the
+*work* that still has to land in files. Per-stack roadmaps continue
+to own intra-stack tasks; this list exists so the cross-stack
+dependencies stay visible in one place.
+
+#### gcp-management-tf
+
+- [x] Expose `service_account_unique_id` as a module output
+      (`modules/iam/outputs.tf`) and as a root output
+      (`outputs.tf`). **Done (Item 1).**
+- [x] Add `aws_role_arns` (map(string)) and `azure_federated_apps`
+      (map(object({client_id, tenant_id}))) variables to the root
+      stack; thread them through `main.tf` into the bootstrap
+      templatefile call at `main.tf:82-86`. **Done (Item 4).**
+      `azure_federated_apps` also carries optional `subscription_ids`
+      per P0-azsubs.
+- [x] Add `aws_regions` (list(string), default
+      `["us-east-1","us-west-2"]`) to parameterise the AWS discovery
+      loop proposed in item 4c. **Done (Item 4).**
+- [x] Render `/etc/mgmt/federated-principals.json` from the
+      bootstrap template using those variables; ensure the file is
+      owned by root and readable by the persona user. **Done (Item 4).**
+- [x] Switch Cloud NAT to a reserved static IP (item 2) and expose
+      `nat_public_ip` as a root output so operators can paste it
+      into each cluster's `authorized_cidrs`. **Done (Item 2).**
+- [x] Add a preflight subcommand
+      (`refresh-kubeconfigs --preflight`) that reports egress IP
+      and TCP-reachability of each configured cluster endpoint.
+      **Done.** `preflight_main` in `bootstrap.sh.tpl:606` curls
+      `ifconfig.me` (fallback `api.ipify.org`) for the egress IP, then
+      iterates GKE / EKS / AKS — describing each cluster, TCP-probing
+      port 443 with a 5s timeout, and noting whether the egress IP is
+      listed in each cluster's `authorized_cidrs` /
+      `publicAccessCidrs` / `apiServerAccessProfile.authorizedIpRanges`.
+      Final summary line reports reachable / unreachable counts and
+      flags clusters whose CIDR list is missing the egress IP. Triggered
+      by `case "$${1:-}"` dispatch at the top of `refresh-kubeconfigs`;
+      no kubeconfig writes in preflight mode.
+- [x] Persistent-session wiring (see P0-sessions below): install a
+      token-refresh timer/daemon and a `~/.aws/config` profile that
+      uses `web_identity_token_file` so kubectl sessions outlive a
+      single `refresh-kubeconfigs` invocation. **Done with caveats
+      (Item 4 / P0-sessions).** Three blocking follow-ups in
+      `P0 Item 4 — follow-up from implementation review`
+      (RuntimeDirectory persistence, token leak via cmdline,
+      profile.d only sourced in login shells).
+- [x] GKE context alias consistency. **Done with caveats (Item 4).**
+      Renamed to `gke-<project>-<cluster>` (not the proposed
+      `gke-<label>-<name>` — GCP has no operator-supplied label
+      analogue). Multi-location collision follow-up tracked under
+      Item 4.
+- [x] Port the `scoped_roles` list in
+      `modules/iam/main.tf:29-34` — no change needed. **Verified
+      (no action required).** `compute.viewer` stays org-scoped; the
+      mgmt VM needs no additional GCP roles for the cross-cloud arc.
+
+#### aws-eks-tf
+
+- [x] Add `mgmt_vm_gcp_sa_unique_id` variable + OIDC provider for
+      `accounts.google.com` + federated IAM role + role policy
+      (`eks:DescribeCluster`, `eks:ListClusters`). **Done (Item 1).**
+      Inline policy also grants `sts:GetCallerIdentity` for debug
+      tooling.
+- [x] Consolidate `cluster_admin_principal_arn` (singular, string,
+      no validation) at `variables.tf:72-76` into
+      `cluster_admin_principal_arns` (plural, list, non-empty
+      validation, ARN-shape validation). Replace the single-count
+      access-entry + access-policy-association pair at
+      `eks.tf:105-125` with `for_each`. **Done (Item 3).**
+- [x] Expose `mgmt_vm_role_arn` as an output so
+      `gcp-management-tf` can consume it via `terraform_remote_state`
+      or manual paste into `var.aws_role_arns`. **Done (Item 1).**
+- [x] Rename output `cluster_region` at `outputs.tf:6` to
+      `cluster_location` for cross-stack symmetry (item 8).
+      **Done.** Renamed without a backwards-compat alias (no internal
+      consumers existed). Also added a sibling `nat_gateway_public_ips`
+      output (list, one element per AZ unless `single_nat_gateway = true`)
+      mirroring AKS's `nat_gateway_public_ip`.
+
+#### azure-aks-tf
+
+- [x] Add the `azuread` provider to `versions.tf` (currently only
+      `azurerm` is pinned). **Done (Item 1).** Pinned `~> 3.0`; empty
+      `provider "azuread" {}` block (tenant-pin follow-up tracked in
+      Item 1 review).
+- [x] Add `mgmt_vm_gcp_sa_unique_id` variable + AAD Application +
+      Service Principal + federated credential + role assignment
+      ("Azure Kubernetes Service RBAC Cluster Admin" scoped to the
+      cluster). **Done (Item 1).**
+- [x] Expose `mgmt_vm_app_client_id` and `mgmt_vm_tenant_id` as
+      outputs so `gcp-management-tf` can consume them via
+      `var.azure_federated_apps`. **Done (Item 1).**
+- [x] Rename output `location` at `outputs.tf:16` to
+      `cluster_location` for cross-stack symmetry (item 8).
+      **Done.** Renamed without a backwards-compat alias; description
+      reworded to match the new name. AKS's `nat_gateway_public_ip`
+      already existed and is unchanged.
+
+#### gcp-gke-tf
+
+- [x] Bootstrap the mgmt VM SA into in-cluster RBAC. **Done with
+      caveats (Item 3).** Took option (1): documented the
+      `kubectl create clusterrolebinding mgmt-vm-admin` step in
+      `gcp-gke-tf/README.md`. Option (2) (Kubernetes-provider
+      automation) remains a stretch goal.
+- [ ] Accept a `mgmt_vm_sa_email` variable so the binding in (2)
+      above does not require the operator to read a string out of a
+      sibling stack's output every apply. **Not started.** Only
+      needed if/when option (2) is chosen; option (1) shipped instead.
+
+#### Cross-stack / tfvars
+
+- [x] Update `gcp-management-tf/terraform.tfvars.example`,
+      `aws-eks-tf/terraform.tfvars.example`, and
+      `azure-aks-tf/terraform.tfvars.example` with the new
+      cross-stack variables. **Done with caveats (Items 1/2/3/4).**
+      Per-stack examples reflect the new variables they consume;
+      however, a consolidated apply-order handoff comment (mgmt first
+      → capture `service_account_unique_id` + `nat_public_ip` →
+      paste into cluster stacks → apply → capture per-cluster outputs
+      → paste back → re-apply mgmt) is not centralized in any single
+      file. Minor follow-up: add the handoff narrative to the top of
+      each example or to the root README.
+- [x] Once item 5 (remote state) lands, replace that paste dance
+      with `terraform_remote_state` data sources in each consumer
+      stack. **Done as opt-in.** Added `aws_eks_states` /
+      `azure_aks_states` map variables in `gcp-management-tf/variables.tf`,
+      a new `gcp-management-tf/remote_states.tf` with `for_each`'d
+      `data.terraform_remote_state.{aws_eks,azure_aks}` blocks
+      (backends fixed to S3 + azurerm to mirror each cluster stack),
+      and locals in `main.tf` that derive
+      `aws_role_arns_effective` / `azure_federated_apps_effective`
+      via `merge(from_state, explicit)`. The bootstrap template now
+      jsonencodes the effective maps. Both new variables default to
+      `{}`, so the legacy explicit-paste path still works unchanged
+      and operators on local state are unaffected. Two-pass apply
+      order documented in `gcp-management-tf/README.md`. Caveat:
+      backend types are hard-coded — fleets storing cluster-stack
+      state in non-S3 / non-azurerm backends still need the explicit
+      maps.
+
+### P0-sessions. Persistent kubectl sessions outlive a single refresh
+
+**Status:** Complete with caveats. Implemented alongside Item 4 —
+`/usr/local/sbin/mgmt-write-id-token`, `mgmt-gcp-id-token.service`+
+`.timer` (50-min refresh cadence), `~/.aws/config` per-label profiles
+with `web_identity_token_file`, `/etc/profile.d/mgmt-azure-federated.sh`
+for kubelogin workloadidentity mode. Three blocking follow-ups tracked
+in `P0 Item 4 — follow-up from implementation review` directly affect
+this subsystem (RuntimeDirectory persistence, JWT leak via cmdline,
+profile.d login-shell scope).
+
+**Why it matters.** Item 4c's proposed `refresh-kubeconfigs` uses
+`aws sts assume-role-with-web-identity` and caches the returned
+credentials as **environment variables** inside the script's own
+shell, and `az login --service-principal --federated-token`
+followed by `az logout` at the end of the Azure loop. Both patterns
+make credentials vanish the moment the refresh finishes:
+
+- AWS STS web-identity credentials are short-lived (1h default, 12h
+  max). When they expire mid-session, `kubectl` calls `aws eks
+  get-token` under the hood and hits "no credentials" because the
+  env vars that gave it credentials are gone.
+- `az logout` at the tail of the Azure block wipes the `az account`
+  cache; `kubelogin convert-kubeconfig -l azurecli` then has
+  nothing to call at kubectl time.
+
+The operator pattern is "SSH into mgmt VM, open k9s, leave it open
+for a few hours." That needs credentials that refresh themselves,
+not credentials that are fresh only for the first kubectl call.
+
+**Proposed fix.** Two concurrent paths, one per cloud:
+
+**AWS — `web_identity_token_file` credential profile.** Write the
+GCP SA ID token to a file on disk and point an `~/.aws/config`
+profile at it. The AWS SDK re-reads that file on every credential
+refresh. Pair with a systemd timer that rewrites the file every 50
+min (GCP ID tokens are valid 1h).
+
+```ini
+# ~/.aws/config (generated by the bootstrap, per label)
+[profile mgmt-vm-<label>]
+role_arn            = arn:aws:iam::<acct>:role/<name>-mgmt-vm
+web_identity_token_file = /var/run/mgmt/gcp-id-token-aws
+duration_seconds    = 3600
+```
+
+```bash
+# /etc/systemd/system/mgmt-gcp-id-token.service — oneshot writer
+# /etc/systemd/system/mgmt-gcp-id-token.timer   — OnUnitActiveSec=50min
+```
+
+**Azure — kubelogin `workloadidentity` mode.** `kubelogin
+convert-kubeconfig -l workloadidentity` does not call `az` at token
+time; it reads `AZURE_FEDERATED_TOKEN_FILE`, `AZURE_CLIENT_ID`, and
+`AZURE_TENANT_ID` from the environment and exchanges the federated
+token itself. Wiring:
+
+```bash
+# /etc/profile.d/mgmt-azure-federated.sh (rendered by bootstrap)
+export AZURE_FEDERATED_TOKEN_FILE=/var/run/mgmt/gcp-id-token-azure
+export AZURE_CLIENT_ID=<from federated-principals.json>
+export AZURE_TENANT_ID=<from federated-principals.json>
+export AZURE_AUTHORITY_HOST=https://login.microsoftonline.com/
+```
+
+Same systemd timer rewrites the Azure audience token file every 50
+minutes. `kubelogin -l workloadidentity` then Just Works for the
+session lifetime.
+
+**Replaces.** The env-var export pattern in item 4c's AWS block and
+the `az login`/`az logout` pair in item 4c's Azure block. Item 4c's
+*discovery* loop (list clusters, write kubeconfig entries) stays —
+the change is only how the kubeconfig's auth stanzas reference
+credentials, and how those credentials get kept fresh.
+
+Tracked as a task under P0-checklist's "gcp-management-tf"
+("Persistent-session wiring").
+
+### P0-azsubs. Multi-subscription AKS discovery
+
+**Status:** Complete with caveats. `azure_federated_apps` map entries
+carry optional `subscription_ids`; the refresh script iterates with
+`az account set --subscription` per entry and falls back to
+`az account list` when unset. Robustness follow-up tracked in
+`P0 Item 4 — follow-up from implementation review`: a failed
+`az account set` for a subscription the SP can't see is
+indistinguishable from "no AKS clusters" — typos in `subscription_ids`
+produce silent empty discovery.
+
+**Why it matters.** Item 4c calls `az aks list` once per configured
+Azure label. That enumerates AKS clusters in the *currently
+selected* subscription only. An operator with AKS labs in more than
+one subscription (common: one per tenant, or separate "sandbox" vs
+"shared" subs) will only see one of them.
+
+**Proposed fix.** Extend `azure_federated_apps` map entries to
+carry an optional `subscription_ids` list and have the refresh
+script iterate:
+
+```hcl
+variable "azure_federated_apps" {
+  type = map(object({
+    client_id        = string
+    tenant_id        = string
+    subscription_ids = optional(list(string), [])
+  }))
+  default = {}
+}
+```
+
+```bash
+# in the Azure loop of refresh-kubeconfigs, after az login:
+mapfile -t SUBS < <(jq -r ".azure_federated_apps[\"$label\"].subscription_ids[]?" "$CONFIG")
+if [[ $${#SUBS[@]} -eq 0 ]]; then
+  # fall back to whatever the federated login selected
+  mapfile -t SUBS < <(az account list --query '[].id' -o tsv)
+fi
+for sub in "$${SUBS[@]}"; do
+  az account set --subscription "$sub"
+  mapfile -t ROWS < <(az aks list --query '[].{n:name,g:resourceGroup}' -o tsv)
+  # ... existing per-cluster loop ...
+done
+```
+
+Tracked as a task under P0-checklist's "gcp-management-tf"
+(extend `azure_federated_apps` shape + refresh loop).
+
+### P0 Item 1 — follow-up from implementation review
+
+Correctness + robustness review of the landed cross-cloud federated
+identity change. Blocking items must be fixed before the feature is
+reliable; robustness items degrade under real-world conditions
+(rotation, multi-env, destroy/re-apply, air-gapped CI).
+
+- [x] **Blocking — AWS OIDC thumbprint uses the leaf cert, not the
+      intermediate.** `aws-eks-tf/iam.tf:147` uses
+      `data.tls_certificate.gcp_oidc[0].certificates[0].sha1_fingerprint`.
+      `certificates[0]` is the *leaf* served by `accounts.google.com`,
+      not the top intermediate/root. AWS historically documents the
+      thumbprint as the SHA-1 of the *root CA* (or top-most cert in
+      the chain). Google is on AWS's trusted root list so IAM
+      currently ignores this value at token-validation time, but the
+      field still has to be syntactically valid, and relying on "AWS
+      ignores it for Google" is a latent footgun if that behaviour
+      ever changes. Fix: index the last element of
+      `certificates` (the chain closest to root, e.g.
+      `certificates[length(certificates) - 1]`) or pin a known-good
+      Google thumbprint and document the rotation runbook. At minimum,
+      add a comment noting the current cosmetic status.
+      Fixed: index changed to chain root (`length(certificates) - 1`)
+      with inline comment.
+- [x] **Blocking — `azuread` provider has no tenant pin.**
+      `azure-aks-tf/providers.tf:26` declares `provider "azuread" {}`.
+      Unlike azurerm (which takes `subscription_id` explicitly),
+      azuread falls back to whatever tenant the ambient credential
+      chain resolves first. On an operator workstation where `az
+      login` has picked up a home tenant different from the one
+      hosting the AKS subscription, the AAD App lands in the wrong
+      tenant and the federated credential silently trusts the wrong
+      issuer. Fix: add `tenant_id = data.azurerm_client_config.current.tenant_id`
+      to the azuread provider block (the data source is already
+      present and non-count-gated, so this works even when the
+      feature is disabled).
+      Fixed: `tenant_id` pinned to `data.azurerm_client_config.current.tenant_id`
+      (data source declared in `iam.tf`, resolves cross-file).
+- [ ] **Robustness — IAM role name not unique across EKS stacks.**
+      `aws-eks-tf/iam.tf:156` names the role `"${var.cluster_name}-mgmt-vm"`.
+      If two EKS stacks in the same account share a `cluster_name`
+      (unlikely but allowed), the second apply collides on the IAM
+      role. IAM is account-global; consider suffixing with region or
+      a short stack id, or at minimum documenting the global-uniqueness
+      constraint on `var.cluster_name`.
+- [ ] **Robustness — AAD App `display_name` not unique across
+      subscriptions in same tenant.** `azure-aks-tf/iam.tf:75` uses
+      `"${var.cluster_name}-mgmt-vm"`. AAD App display_name is not
+      enforced unique but operators filter by it; two clusters with
+      the same `cluster_name` in the same tenant produce two Apps
+      with identical display_names and ambiguous CLI listings. Same
+      mitigation as above (suffix with subscription/region) or
+      document the constraint.
+- [ ] **Robustness — `data.tls_certificate.gcp_oidc` re-resolved every
+      plan when feature is enabled.** Count-gating it off is correct
+      and avoids plan-time DNS/TLS calls when disabled, but when
+      enabled every `terraform plan` does an outbound TLS handshake
+      to `accounts.google.com`. In an air-gapped CI runner this fails
+      plan, not apply. Consider pairing the dynamic lookup with an
+      operator-overridable `var.gcp_oidc_thumbprint` (empty → use
+      data source, non-empty → use value) so CI can be pinned.
+- [ ] **Robustness — `mgmt_vm_tenant_id` output leaks tenant id when
+      feature is disabled.** `azure-aks-tf/outputs.tf:73` returns
+      `data.azurerm_client_config.current.tenant_id` unconditionally.
+      Tenant id is not secret, but the output description says "the
+      mgmt VM federates into" which is misleading when federation is
+      off. Either gate the output on the feature (wrap in a
+      conditional returning null) or rewrite the description to say
+      "current apply principal's tenant, for reference" to match
+      behaviour.
+- [ ] **Robustness — no `create_before_destroy` on the AAD App.**
+      `azure-aks-tf/iam.tf:72`. Destroy-then-recreate of the App
+      (e.g. on a `cluster_name` rename) leaves a window where the
+      federated credential and role assignment are both gone; the
+      mgmt VM loses AKS access for the duration of the apply. Low
+      priority for a lab, but worth a `lifecycle { create_before_destroy = true }`
+      once the pattern stabilises.
+- [ ] **Robustness — no explicit depends_on from
+      `aws_eks_access_policy_association.mgmt_vm` to
+      `aws_iam_role.mgmt_vm_federated`.** The access-entry→
+      access-policy-association `depends_on` is present
+      (`aws-eks-tf/iam.tf:222`) but the access-entry itself only
+      implicitly depends on the role via `principal_arn`. On a
+      destroy cycle where the role is recreated (name change,
+      force-replace), the access entry may try to reference an ARN
+      that is mid-replacement. Add `depends_on = [aws_iam_role.mgmt_vm_federated]`
+      to the access entry for belt-and-braces ordering.
+- [ ] **Robustness — `cluster_admin_principal_arn` coexistence path
+      not tested.** The landed item-1 change adds a parallel
+      `aws_eks_access_entry.mgmt_vm` resource; item 3 of this roadmap
+      consolidates admin principals into a list. Until item 3 lands,
+      applying item 1 on a cluster that already has an operator
+      access entry is fine, but the upgrade path (list-consolidation)
+      has to preserve both entries without churn. Add a `moved`
+      block plan when item 3 is authored, or verify via import
+      that the transition is no-op.
+
+### P0 Item 2 — follow-up from implementation review
+
+Correctness + robustness review of the landed static-NAT-IP change.
+Blocking items are misleading operator guidance; robustness items
+affect destroy/re-apply ergonomics and multi-stack parallelism.
+
+- [ ] **Blocking — AUTO→MANUAL migration comment is wrong.**
+      `gcp-management-tf/modules/network/main.tf:55-61` warns that
+      flipping `nat_ip_allocate_option` from `AUTO_ONLY` to
+      `MANUAL_ONLY` "forces replacement of the
+      google_compute_router_nat". In google provider 6.x the
+      `nat_ip_allocate_option` and `nat_ips` fields are both
+      in-place updatable (no `ForceNew`); the transition is an
+      update, not a replace. Operators reading the current comment
+      will plan a maintenance window they do not need, or worse,
+      pre-destroy. Fix: rewrite the comment to describe the actual
+      behaviour — egress IP flips atomically on the update from the
+      prior auto-allocated IP to the newly reserved static IP; no
+      replacement, no downtime beyond the NAT config push.
+- [ ] **Blocking — root `nat_public_ip` output description misleads
+      when feature disabled.** `gcp-management-tf/outputs.tf:37`.
+      The description ends with "Null when create_network = false"
+      but the preceding sentence unconditionally instructs operators
+      to "Append '<IP>/32' to authorized_cidrs". An operator running
+      with `create_network = false` (BYO network path) sees
+      `nat_public_ip = null` and has no guidance; worse, the current
+      implementation offers no alternative path to discover the
+      egress IP in that mode. Fix: either (a) reword to "When
+      create_network = true this is the static egress IP; when
+      false, query your own NAT for its egress IP" or (b) make the
+      BYO path surface the IP via a new var (out of scope for this
+      item but flag in the description).
+- [ ] **Robustness — global name collision on
+      `${var.name_prefix}-nat-ip`.**
+      `gcp-management-tf/modules/network/main.tf:43`.
+      `google_compute_address` names are unique per project+region.
+      Two parallel mgmt-stack applies in the same project/region with
+      the same `name_prefix` (different workspaces, or a
+      dev/shared pair) collide at create time with a non-idempotent
+      error. Fix: either add a validation warning on `name_prefix`
+      uniqueness, or suffix with `random_id`/workspace name.
+- [ ] **Robustness — no `lifecycle { prevent_destroy }` on
+      `google_compute_address.nat`.**
+      `gcp-management-tf/modules/network/main.tf:42-47`. The whole
+      point of this change is IP stability; a stray `terraform
+      destroy -target` or a refactor that moves the resource wipes
+      the reservation and the next apply issues a fresh IP,
+      silently breaking every cluster's `authorized_cidrs`. For a
+      lab this is acceptable given the tear-down cadence, but a
+      `prevent_destroy = true` (or at least a comment calling out
+      the destroy footgun) matches the "load-bearing" framing in
+      the adjacent comment.
+- [ ] **Robustness — reserved IP bills when detached.** Reserved
+      static external IPs are free only while in use. If the NAT is
+      destroyed but the address survives (e.g. destroy ordering
+      edge-case, partial apply failure, or `terraform state rm` on
+      the NAT), the address quietly accrues ~\$0.005/hr. Low cost in
+      absolute terms but worth a one-line comment near the
+      `google_compute_address` resource noting the idle-bill
+      behaviour so operators cleaning up a failed apply know to
+      check.
+- [ ] **Robustness — EKS/AKS tfvars hint should steer to one
+      canonical variable name.** `aws-eks-tf/terraform.tfvars.example:8`
+      and `azure-aks-tf/terraform.tfvars.example:12` both use
+      `authorized_cidrs` (list of strings). The root
+      `nat_public_ip` output description correctly implies a single
+      variable name across all three stacks, and verification
+      against `variables.tf` confirms the name matches in all three
+      — good. But AKS's underlying azurerm field is
+      `api_server_authorized_ip_ranges`; if the AKS stack is ever
+      renamed to mirror the azurerm field, the cross-stack
+      instruction in the mgmt output description will drift. Add a
+      code comment or README cross-reference binding the three
+      stacks' variable name to the output description.
+
+### P0 Item 3 — follow-up from implementation review
+
+Correctness + robustness review of the landed admin-list
+consolidation. Blocking items produce a silently-broken mgmt VM or
+stale operator guidance; robustness items degrade under non-default
+workflows.
+
+- [ ] **Blocking — stack-local `aws-eks-tf/roadmap.md` still
+      references the removed singular variable.**
+      `aws-eks-tf/roadmap.md:13` and `aws-eks-tf/roadmap.md:22`
+      instruct the operator to set `cluster_admin_principal_arn`
+      (singular). That variable no longer exists; an operator reading
+      this file first will paste a name Terraform will reject at
+      parse (`Unsupported argument`) unless they also read the
+      tfvars example. Fix: rename both references to
+      `cluster_admin_principal_arns` and update the description to
+      mention the mgmt VM role ARN as the canonical second entry.
+- [ ] **Robustness — silent-failure mode when operator uses the
+      two-apply dance without the mgmt VM ARN.** `aws-eks-tf/README.md:47-49`
+      offers two valid ways to add the mgmt VM role ARN to the list:
+      (a) pre-compute `arn:aws:iam::<account>:role/<cluster_name>-mgmt-vm`
+      before first apply, or (b) read the `mgmt_vm_role_arn` output
+      after apply and add it on a follow-up apply. Path (b) leaves
+      the mgmt VM with valid AWS federated creds and
+      `eks:DescribeCluster` (so `aws eks update-kubeconfig`
+      succeeds) but *no* cluster-admin — `kubectl` returns
+      `forbidden` until the second apply lands. If the operator
+      forgets the second apply, Item 1's entire federated-identity
+      stack ships functionally broken for EKS with no error
+      surface. Fix: in `aws-eks-tf/README.md:47`, promote path (a)
+      (pre-compute) as the default and demote (b) to "only if you
+      must run the apply before you know the account ID",
+      explicitly calling out the forbidden-kubectl interim state.
+- [ ] **Robustness — ARN validation regex rejects non-commercial
+      AWS partitions.** `aws-eks-tf/variables.tf:85` pins the
+      prefix literal `^arn:aws:iam::`. China (`arn:aws-cn:`) and
+      GovCloud (`arn:aws-us-gov:`) ARNs fail validation even though
+      EKS access entries work identically there. Out of scope for
+      the lab today, but the regex is trivially future-proofable
+      and the error message would mislead any operator hitting it
+      ("Every entry must be an IAM user or role ARN" — but it *is*
+      one). Fix: change to `^arn:aws[a-z-]*:iam::[0-9]{12}:(user|role)/`
+      or document the commercial-partition-only constraint in the
+      variable description.
+- [ ] **Robustness — `toset()` silently dedupes duplicate ARNs.**
+      `aws-eks-tf/eks.tf:110,118` convert the input list via
+      `toset(var.cluster_admin_principal_arns)`. If an operator
+      accidentally lists the same ARN twice (cut-and-paste), the
+      second entry is collapsed with no warning. Harmless
+      correctness-wise but masks a tfvars typo. Optional fix: add a
+      `validation` block that asserts
+      `length(var.cluster_admin_principal_arns) == length(toset(var.cluster_admin_principal_arns))`
+      with a "duplicate ARN" error message. Skip if considered too
+      nitpicky for a lab.
+- [ ] **Robustness — `moved` block omission is defensible but the
+      README's rationale overstates the constraint.**
+      `aws-eks-tf/README.md:76` claims "the new address keys are
+      ARNs that are only known at apply time (not expressable in
+      source)". Verified against Terraform 1.14: `moved` blocks
+      require *constant* keys and reject variable-referenced
+      indexes — the implementer is correct that a generic
+      source-committed `moved` block is impossible. BUT a per-operator
+      literal `moved { from = aws_eks_access_entry.admin[0]; to = aws_eks_access_entry.admin["arn:aws:iam::<acct>:user/<you>"] }`
+      dropped into a local `migrations.tf` before the first
+      post-upgrade apply would work and leave plan output cleaner
+      than `terraform state mv`. Fix: in the README upgrade
+      section, offer the per-operator `moved` block as an
+      alternative pattern for operators who prefer HCL-driven
+      migrations, noting it requires a local-only file and is
+      removable after the next apply. Strictly informational —
+      current guidance is not wrong.
+
+### P0 Item 4 — follow-up from implementation review
+
+Correctness + robustness review of the landed 4a+4b+4c + P0-sessions +
+P0-azsubs change. Template escaping is clean (full `bash -n` passes on
+the rendered script, no stray `$$`, jq and awk escapes survive). The
+findings below are runtime behaviours `bash -n` cannot catch.
+
+- [x] **Blocking — systemd `RuntimeDirectory=mgmt` on a `Type=oneshot`
+      service deletes `/run/mgmt` (and the token files) the moment the
+      oneshot exits.** Resolved by adding `RuntimeDirectoryPreserve=yes`
+      to the `[Service]` block in `mgmt-gcp-id-token.service`
+      (`bootstrap.sh.tpl:452`). Directory now survives oneshot exit, so
+      `/var/run/mgmt/gcp-id-token-aws` and `/var/run/mgmt/gcp-id-token-azure`
+      stay on disk between timer fires; AWS web_identity_token_file and
+      Azure AZURE_FEDERATED_TOKEN_FILE refs no longer dangle.
+- [x] **Blocking — `az login --federated-token "$(cat FILE)"` exposes
+      the JWT in the process table.** Resolved by switching both call
+      sites (main path `bootstrap.sh.tpl:937` and the new preflight
+      handler `:731`) to `--federated-token-file "$AZ_TOKEN_FILE"`. The
+      JWT now never appears on the command line, so it cannot be read
+      from `/proc/<pid>/cmdline` by other local users. Comment notes the
+      az CLI 2.62+ requirement (well below the packages.microsoft.com
+      floor we install).
+- [x] **Blocking — `/etc/profile.d/mgmt-azure-federated.sh` is only
+      sourced by login shells, but `refresh-kubeconfigs`'s downstream
+      kubectl/kubelogin path needs the env vars for
+      workload-identity mode.** Resolved by adding an explicit
+      `[[ -r /etc/profile.d/mgmt-azure-federated.sh ]] && . /etc/profile.d/mgmt-azure-federated.sh`
+      at the top of the Azure block in `refresh-kubeconfigs`
+      (`bootstrap.sh.tpl:912`) and inside `preflight_main`'s Azure
+      branch. Header comment of the script now documents the sourcing
+      requirement so cron/systemd/non-login `sudo` invocations get
+      `AZURE_CLIENT_ID` / `AZURE_TENANT_ID` / `AZURE_FEDERATED_TOKEN_FILE`.
+- [ ] **Robustness — `kubelogin convert-kubeconfig -l workloadidentity`
+      runs once at the end of the Azure block with no
+      `--context`/`--kubeconfig-filter` scope.**
+      `gcp-management-tf/scripts/bootstrap.sh.tpl:759`. kubelogin walks
+      every context and rewrites only the ones whose exec block names
+      `kubelogin get-token` — so non-AKS contexts (GKE's
+      `gke-gcloud-auth-plugin`, EKS's `aws eks get-token`) survive
+      untouched today. But the conversion is unconditional: if a future
+      GKE auth-plugin release starts shelling out to a helper that
+      happens to match kubelogin's detection heuristic, or if an
+      operator imports an AAD-enabled non-AKS cluster context, the
+      rewrite silently clobbers auth. Fix: scope the call with
+      `--context "azure-*"` (not supported) OR iterate the azure
+      contexts just merged and call `kubelogin convert-kubeconfig
+      --context <ctx>` per-context. Low probability, but defence in
+      depth matches the "block is tolerant of the others" header
+      comment.
+- [ ] **Robustness — `AZ_FIRST_CLIENT_ID` / `AZ_FIRST_TENANT_ID`
+      default to empty strings when `azure_federated_apps` is `{}`.**
+      `gcp-management-tf/scripts/bootstrap.sh.tpl:530-532, 540-541`.
+      jq's `(.[0].value.client_id // "")` on an empty array returns
+      `""`, and the profile.d script ends up exporting
+      `AZURE_CLIENT_ID=''` / `AZURE_TENANT_ID=''`. If an operator later
+      adds an AKS context by hand before the next mgmt apply,
+      kubelogin's workloadidentity mode dies with a
+      client_id-is-empty error. Fix: guard the whole block on
+      `[[ "$AZ_LABEL_COUNT" -gt 0 ]]` — when zero apps are
+      configured, skip writing profile.d entirely (or write only the
+      token-file + authority-host lines and a comment).
+- [ ] **Robustness — `PERSONA_GROUP` expansion in the systemd unit
+      heredoc has no fallback if `id -gn` fails.**
+      `gcp-management-tf/scripts/bootstrap.sh.tpl:373, 444-455`.
+      `<<SERVICE` is unquoted so `Group=${PERSONA_GROUP}` is expanded
+      at bootstrap time; if `id -gn "$VM_USER"` returns empty (user
+      creation hiccup, NSS timing, bootstrap re-run before user
+      exists), the unit lands with `Group=`, systemd's load fails, and
+      subsequent `systemctl start` reports a cryptic parse error. Fix:
+      `: "${PERSONA_GROUP:?persona group unresolved — phase 6 must run before phase 8}"`
+      guard before the heredoc, and/or add the guard at the top of
+      phase 8.
+- [ ] **Robustness — `az account set --subscription` for a sub the
+      federated SP cannot see fails hard and the whole label's
+      remaining subs are skipped.**
+      `gcp-management-tf/scripts/bootstrap.sh.tpl:733-735`. The
+      `|| { echo ...; continue; }` only continues the `for sub` loop
+      — good — but an operator who typo'd a sub ID in
+      `subscription_ids` gets one error line and silently-empty AKS
+      discovery for that label. Fix: surface the sub-set failure
+      distinctly from "no AKS clusters in this sub" (e.g. `echo
+      "  !! subscription $sub not accessible to $label"`), and
+      consider a preflight that validates every configured
+      subscription_id against `az account list` at apply time.
+- [ ] **Robustness — GKE context rename collides for multi-location
+      clusters with the same name.**
+      `gcp-management-tf/scripts/bootstrap.sh.tpl:633-634`. Rename
+      target is `gke-${proj}-${name}` — location is dropped. Two
+      clusters named `lab` in the same project, one in `us-central1`
+      and one in `us-east1-a`, rename to the same context and the
+      second overwrites the first. Unlikely in a tiny lab but the
+      original gcloud form `gke_${proj}_${loc}_${name}` was
+      collision-proof; the rename is strictly lossier. Fix: include
+      location in the alias (`gke-${proj}-${loc}-${name}`) or only
+      rename when a duplicate name across locations is absent
+      (`kubectl config get-contexts` check first).
+- [ ] **Robustness — `AWS_PROFILE` region default `us-east-1` in
+      `~/.aws/config` hides multi-region intent from ad-hoc operator
+      commands.** `gcp-management-tf/scripts/bootstrap.sh.tpl:514`.
+      The comment at :499-502 acknowledges this; the UX consequence is
+      an operator who types `aws --profile mgmt-vm-foo eks
+      list-clusters` (no `--region`) quietly scans only us-east-1 and
+      thinks the west clusters are gone. Fix: either omit the `region`
+      line from each profile entirely (forces explicit `--region`) or
+      default to the first entry of `var.aws_regions` rather than a
+      hard-coded `us-east-1`.
+
+### P0 Item 5 — follow-up from implementation review
+
+Correctness + robustness review of the landed remote-state bootstrap
+stacks + sibling backend wiring. `terraform fmt -check -recursive`
+passes across `bootstrap-state/` and every `backend.tf`. The bootstrap
+designs are sound; findings below are traps that only surface at
+`init`/`apply` or `destroy` time.
+
+- [x] **Blocking — `use_lockfile = true` in
+      `aws-eks-tf/backend.hcl.example:10` silently fails on Terraform
+      < 1.10, but `aws-eks-tf/versions.tf:2` still allows `>= 1.5.0`.**
+      An operator on 1.5-1.9 (inside the declared floor) uncomments
+      `backend.tf`, copies the example, runs `init -migrate-state`,
+      and gets an `unknown argument "use_lockfile"` error at best or a
+      writer-race at worst. The `bootstrap-state/aws/README.md:34-37`
+      note is insufficient — the required_version must enforce the
+      floor. Fix: bump `aws-eks-tf/versions.tf` (and any future AWS
+      sibling) to `required_version = ">= 1.10.0, < 2.0.0"`. Same bump
+      belongs on `bootstrap-state/aws/versions.tf:2` — the bootstrap
+      itself does not need 1.10, but homogenising the floor prevents
+      the operator from apply-ing bootstrap on 1.9 then discovering
+      the sibling cannot migrate. **Done.** Both `aws-eks-tf/versions.tf`
+      and `bootstrap-state/aws/versions.tf` bumped to
+      `>= 1.10.0, < 2.0.0`; rationale comments inline at each pin.
+- [x] **Blocking — `bootstrap-state/aws/main.tf:22-26` creates the
+      tfstate CMK with no explicit key policy, so S3 backend callers
+      without a separate IAM grant to `kms:Decrypt` /
+      `kms:GenerateDataKey` fail the first `plan` against the
+      bucket.** Default KMS key policy only grants root-of-account
+      admin; IAM policies on the operator principal must then allow
+      the KMS actions, or an explicit key policy statement must grant
+      them. Most lab operators run with `AdministratorAccess` and
+      won't notice — but anyone scoped down (the stated "least-
+      privilege" posture this repo preaches) will hit `AccessDenied`
+      on `GenerateDataKey` at state write. Fix: either attach an
+      explicit `aws_kms_key_policy` granting the caller's ARN the four
+      actions `kms:Encrypt` / `kms:Decrypt` / `kms:GenerateDataKey` /
+      `kms:DescribeKey`, or document the IAM grant requirement
+      prominently in `bootstrap-state/aws/README.md` (currently
+      buried in one sentence at line 23-25 of `outputs.tf`, absent
+      from the README's "Apply" section). **Done.** Added
+      `data "aws_caller_identity" "current"` plus
+      `aws_kms_key_policy.tfstate` with two statements: `RootAdmin`
+      (account root, `kms:*`) and `OperatorStateAccess` (caller ARN,
+      the four data-plane actions). README updated with a "KMS key
+      policy" section.
+- [x] **Blocking (high-severity robustness) — no `prevent_destroy`
+      lifecycle on the state buckets or Azure container / storage
+      account.** `bootstrap-state/gcp/main.tf:13`,
+      `bootstrap-state/aws/main.tf:37`,
+      `bootstrap-state/azure/main.tf:16,41`. `force_destroy = false`
+      (AWS/GCP) prevents destroy *while objects exist*, but an
+      operator who runs `terraform destroy` in a bootstrap stack
+      after having manually emptied the bucket — or on Azure, where
+      no force_destroy exists and destroy happily wipes a non-empty
+      storage account — nukes every sibling stack's state. Azure is
+      the worst: `azurerm_storage_account` deletes the account
+      (taking all containers + blobs) without a guard. Fix: add
+      `lifecycle { prevent_destroy = true }` to
+      `google_storage_bucket.tfstate`, `aws_s3_bucket.tfstate`,
+      `aws_kms_key.tfstate` (losing the CMK strands the ciphertext),
+      and `azurerm_storage_account.tfstate` +
+      `azurerm_storage_container.tfstate`. Document the escape hatch
+      (comment out the lifecycle + re-apply) in each bootstrap README.
+      **Done.** `prevent_destroy = true` added to all five resources
+      (GCS bucket, S3 bucket, KMS CMK, Azure storage account, Azure
+      container) with the standard escape-hatch comment. Teardown
+      sections of all three bootstrap READMEs updated with the
+      comment-out-then-apply procedure.
+- [ ] **Robustness — `bootstrap-state/gcp/README.md:30-31` claims the
+      GCS backend "locks natively via the generation-checked lock
+      object"; this overstates the guarantee.** GCS's Terraform
+      backend uses an advisory lock file (`default.tflock`) with
+      conditional writes — it is racy against `force-unlock` and
+      against clients that skip the lock entirely. For a single-
+      operator lab it is fine, but the wording implies equivalence
+      with DynamoDB / S3-lockfile guarantees. Fix: soften to
+      "advisory lock object with generation-checked writes; adequate
+      for sequential operators, not a distributed mutex." Same
+      softening applies to `gcp-management-tf/backend.tf:10-11` and
+      `gcp-gke-tf/backend.tf:10-11`.
+- [x] **Robustness — `bootstrap-state/azure/main.tf:16-39` has no
+      `prevent_destroy` AND Azure storage account deletion is
+      irreversible after the soft-delete retention window.** Even
+      with the lifecycle guard above, the default storage-account
+      soft-delete policy is not configured here — a recovered
+      destroy within 7 days is possible only if the subscription's
+      default retention covers it. Fix: set
+      `blob_properties.delete_retention_policy.days = 30` and
+      `container_delete_retention_policy.days = 30` on the storage
+      account; cheap insurance for state recovery. **Done.** Both
+      retention blocks added inside the existing `blob_properties`
+      block on `azurerm_storage_account.tfstate`, set to 30 days
+      each.
+- [ ] **Robustness — `bootstrap-state/aws/README.md:49-51` claims
+      "The bucket ships without `force_destroy`, so `terraform
+      destroy` fails while any sibling stack still stores state in
+      it."** True, but the README does not mention that
+      `aws_kms_key.tfstate` has `deletion_window_in_days = 7` and
+      *will* be scheduled for deletion on destroy — a destroy that
+      succeeds after the operator manually empties the bucket takes
+      the CMK with it, rendering any surviving ciphertext
+      (e.g. point-in-time copies, CloudTrail log entries encrypted by
+      it) permanently unreadable. Fix: call out the CMK deletion
+      behaviour in the teardown section and recommend
+      `aws kms disable-key` + manual deletion via console after a
+      cooling-off period instead of `terraform destroy`.
+- [ ] **Robustness — `bootstrap-state/azure/README.md:35-48` documents
+      the `operator_principal_id` path but the "out-of-band" example
+      at line 42-47 builds the scope string manually with
+      `/blobServices/default/containers/tfstate` appended to the
+      storage-account ID.** That scope form works but is not the
+      `resource_manager_id` the in-stack role assignment uses (line
+      59 of `main.tf`). The two paths grant the same role at
+      effectively the same scope, but the README form is fragile to
+      container rename (hardcoded `tfstate`). Fix: have the README
+      suggest `$(terraform output -raw container_resource_id)` after
+      adding a `container_resource_id` output to the bootstrap —
+      currently `outputs.tf` exposes no such output, so the README's
+      `terraform output -raw container_resource_id 2>/dev/null || ...`
+      fallback always takes the `||` path silently.
+- [ ] **Robustness — `.gitignore` pattern for `backend.hcl` is
+      shadowed by the earlier `*.tfvars` / wildcard rules only if the
+      operator names a backend file `backend.tfvars`; the current
+      `backend.hcl` + `!backend.hcl.example` pair works as intended.**
+      Verified by reading `.gitignore`: `*.tfstate*` and `*.tfvars*`
+      rules do not intersect `backend.hcl`, and the negation on the
+      same pattern group fires correctly. No change needed — noting
+      here so the review record shows the check was done.
+- [ ] **Robustness — `aws-eks-tf/backend.hcl.example:9` ships an ARN
+      with `REPLACE-ME` account + key ID.** That is the right
+      posture, but the file is committed (the negation in
+      `.gitignore` keeps it tracked). If an operator edits the
+      committed `.example` in-place instead of copying to
+      `backend.hcl`, their account ID leaks on the next `git add`.
+      Fix: add a prominent header comment (`# DO NOT EDIT — copy to
+      backend.hcl first`) to each `.example` file. Current headers
+      say "Copy to backend.hcl" but not "do not edit here."
 
 ---
 
@@ -725,9 +1524,20 @@ traffic for the current topology.
 
 ### 8. Output naming drift across cluster stacks
 
-**Why it matters.** The mgmt VM's `refresh-kubeconfigs` (item 4)
+**Status:** Done. EKS `cluster_region` renamed to `cluster_location`
+(see `aws-eks-tf/outputs.tf`), AKS `location` renamed to
+`cluster_location` (see `azure-aks-tf/outputs.tf`), GKE was already
+`cluster_location` and is unchanged. EKS gained a sibling
+`nat_gateway_public_ips` output (list, one per AZ unless
+`single_nat_gateway = true`) mirroring AKS's `nat_gateway_public_ip`
+(singular). No backwards-compat aliases were added — there were no
+internal consumers of the old names. The GCP/mgmt-tf cross-stack
+section now consumes these via opt-in `terraform_remote_state` data
+sources (see Cross-stack / tfvars checklist above).
+
+**Why it mattered.** The mgmt VM's `refresh-kubeconfigs` (item 4)
 will read outputs from each cluster stack's remote state. Keeping
-the shape consistent means one parser, not three. Today:
+the shape consistent means one parser, not three. Pre-rename:
 
 | Output | GKE | EKS | AKS |
 |--------|-----|-----|-----|
@@ -847,6 +1657,61 @@ GKE master_ipv4 uses 172.16.0.0/28 because the master peering VPC
 is outside the user VPC.
 EKS VPC CNI uses VPC primary IPs for pods (no separate range).
 ```
+
+### 18. `terraform_remote_state` data sources hard-code `s3` and `azurerm` backends
+
+**Why it matters.** The cross-stack remote-state wiring landed in
+`gcp-management-tf/remote_states.tf` (P0-checklist Cross-stack
+`terraform_remote_state` item) declares `backend = "s3"` for
+`data.terraform_remote_state.aws_eks` and `backend = "azurerm"` for
+`data.terraform_remote_state.azure_aks`. Terraform does not allow the
+`backend` field to be a variable — it is parsed before variable
+evaluation. Operators storing cluster-stack state in non-S3 / non-azurerm
+backends (e.g. an AWS stack with state in GCS, or an air-gapped lab
+with HTTP backend) cannot use the remote-state path; they fall back to
+the explicit `aws_role_arns` / `azure_federated_apps` paste-dance.
+
+For the lab's intended workflow (`bootstrap-state/<cloud>/` per cloud)
+this is fine — siblings ship matching-cloud backends. But a future
+"single-cloud lab" or "shared backend across clouds" topology would
+need this loosened.
+
+**Proposed fix (only when the constraint actually bites).** Either:
+
+- Add parallel `data "terraform_remote_state"` blocks gated on a
+  variable `aws_eks_state_backend` (default `"s3"`, also accepts
+  `"gcs"`, `"local"`, etc.), with one block per supported backend and
+  a `merge()` over all of them. Verbose but explicit.
+- Replace the `terraform_remote_state` path with a custom data source
+  fetching outputs via `terraform output -json` over SSH or a
+  Cloud Function. Strictly worse for this lab.
+
+Documented in `gcp-management-tf/remote_states.tf` header and in
+`gcp-management-tf/variables.tf` description for `aws_eks_states` /
+`azure_aks_states`.
+
+### 19. `azurerm_kubernetes_cluster_maintenance_configuration` not in installed azurerm version
+
+**Why it matters.** `terraform validate` against `azure-aks-tf/`
+fails with an unknown-resource error on
+`azurerm_kubernetes_cluster_maintenance_configuration`. Surfaced
+during the P0 hardening pass (running `terraform fmt -recursive`
+followed by `validate` to confirm the rename + tenant-pin fixes
+clean). Pre-existing on the working tree — not introduced by the
+P0 implementation or the hardening agents. The pinned `azurerm`
+version in `azure-aks-tf/versions.tf` predates that resource type
+landing in the provider, OR the resource name has been renamed
+upstream and the pin needs bumping.
+
+**Proposed fix.** Cross-reference `azure-aks-tf/aks.tf` for the
+exact resource block, check the `azurerm` provider changelog for
+when `azurerm_kubernetes_cluster_maintenance_configuration` (or its
+renamed equivalent — `automatic_channel_upgrade` ⇒ `maintenance_window`
+shapes have churned) actually shipped, then either bump the pin in
+`versions.tf` or rewrite the resource to whatever shape the current
+pin supports. Test with `terraform validate` post-change. The
+maintenance window is a P2#13 explicit non-goal so the simplest fix
+may be to delete the resource entirely.
 
 ---
 

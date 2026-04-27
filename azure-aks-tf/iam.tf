@@ -50,3 +50,62 @@ resource "azurerm_role_assignment" "cluster_network_contributor" {
 #   role_definition_name = "AcrPull"
 #   principal_id         = azurerm_kubernetes_cluster.this.kubelet_identity[0].object_id
 # }
+
+# ---------------------------------------------------------------------------
+# Cross-cloud federated identity for the mgmt VM (GCP -> AAD WIF).
+#
+# The mgmt VM running on GCP signs a JWT with its attached GCP SA, AAD
+# validates it against the federated credential on the AAD App below and
+# issues an AAD access token. `kubelogin` converts this into an AKS
+# kubeconfig. No static AAD client secrets ever touch the VM.
+#
+# All resources in this block are count-gated on var.mgmt_vm_gcp_sa_unique_id
+# being non-empty, so an apply without the variable set is a clean no-op and
+# requires no azuread permissions on the apply principal.
+# ---------------------------------------------------------------------------
+
+# Current tenant_id used by the azurerm provider. Needed as an output so the
+# mgmt VM can point `az login --federated-token` and kubelogin at the right
+# tenant without the operator having to look it up.
+data "azurerm_client_config" "current" {}
+
+resource "azuread_application" "mgmt_vm" {
+  count = var.mgmt_vm_gcp_sa_unique_id == "" ? 0 : 1
+
+  display_name = "${var.cluster_name}-mgmt-vm"
+}
+
+resource "azuread_service_principal" "mgmt_vm" {
+  count = var.mgmt_vm_gcp_sa_unique_id == "" ? 0 : 1
+
+  # azuread 3.x: `client_id` replaces the older `application_id` argument.
+  client_id = azuread_application.mgmt_vm[0].client_id
+}
+
+# Federated credential that trusts Google's OIDC issuer. Both subject AND
+# audience are pinned: subject = GCP SA unique_id (not email — emails can be
+# reassigned), audience = the fixed AAD token-exchange string.
+resource "azuread_application_federated_identity_credential" "mgmt_vm" {
+  count = var.mgmt_vm_gcp_sa_unique_id == "" ? 0 : 1
+
+  # azuread 3.x wants the application's resource ID (the "/applications/<uuid>"
+  # form returned by .id), NOT the client_id or object_id.
+  application_id = azuread_application.mgmt_vm[0].id
+  display_name   = "gcp-mgmt-vm"
+  description    = "Trusts the GCP mgmt VM SA (by numeric unique_id) to mint AAD tokens for this app."
+  audiences      = ["api://AzureADTokenExchange"]
+  issuer         = "https://accounts.google.com"
+  subject        = var.mgmt_vm_gcp_sa_unique_id
+}
+
+# Azure RBAC for Kubernetes: cluster-admin on THIS cluster only. Matches the
+# AWS side's AmazonEKSClusterAdminPolicy scope=cluster. Namespace-scoped
+# roles would defeat the purpose — the mgmt VM is the lab's single kubectl
+# entry point.
+resource "azurerm_role_assignment" "mgmt_vm_aks_admin" {
+  count = var.mgmt_vm_gcp_sa_unique_id == "" ? 0 : 1
+
+  scope                = azurerm_kubernetes_cluster.this.id
+  role_definition_name = "Azure Kubernetes Service RBAC Cluster Admin"
+  principal_id         = azuread_service_principal.mgmt_vm[0].object_id
+}

@@ -30,10 +30,28 @@ credentials stay contained to the management server.
 
 Each stack's README spells out the specific IAM and API requirements.
 
+## Remote state (optional, recommended)
+
+Each cluster stack ships with local state. To share state across machines
+(laptop ↔ mgmt VM, or between teammates), bootstrap the per-cloud state
+store first:
+
+| Cloud | Bootstrap stack | Creates |
+|-------|-----------------|---------|
+| GCP | [`bootstrap-state/gcp/`](./bootstrap-state/gcp) | Versioned GCS bucket, UBLA + public-access-prevention |
+| AWS | [`bootstrap-state/aws/`](./bootstrap-state/aws) | Versioned S3 bucket + KMS CMK, S3-native lockfile locking |
+| Azure | [`bootstrap-state/azure/`](./bootstrap-state/azure) | RG + LRS Storage Account (AAD-auth only) + container |
+
+Each bootstrap stack is self-bootstrapping (local state) and emits a
+`backend_snippet` output. Paste that into the matching sibling stack's
+`backend.tf`, copy `backend.hcl.example` → `backend.hcl`, then
+`terraform init -backend-config=backend.hcl -migrate-state`.
+
 ## Conventions
 
-- **State is local by default.** Each stack ships a commented-out GCS
-  backend block; fill it in before sharing the stack with anyone else.
+- **State is local by default.** Each stack ships a commented-out
+  backend block plus a `backend.hcl.example`; activate per the
+  `bootstrap-state/<cloud>/` README when you need state portability.
 - **`terraform.tfvars` is gitignored.** Copy the `.example` file in each
   stack and fill in project IDs, CIDRs, etc.
 - **No long-lived keys on disk.** The management VM uses its attached

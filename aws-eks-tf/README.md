@@ -30,13 +30,50 @@ Minimal, cost-optimized, **private** EKS cluster for a security research lab on 
 
 ```
 cp terraform.tfvars.example terraform.tfvars
-# Edit terraform.tfvars — at minimum set authorized_cidrs and cluster_admin_principal_arn
+# Edit terraform.tfvars — at minimum set authorized_cidrs and cluster_admin_principal_arns
 terraform init
 terraform plan -out=tfplan
 terraform apply tfplan
 ```
 
 State is local by default. For shared use, create an S3 bucket + DynamoDB lock table out of band and uncomment the backend block in `backend.tf`.
+
+## Granting the mgmt VM cluster-admin
+
+The mgmt VM (from `gcp-management-tf`) federates into an AWS IAM role exposed as the `mgmt_vm_role_arn` output of this stack. To give that role cluster-admin, include it in `cluster_admin_principal_arns`:
+
+```hcl
+cluster_admin_principal_arns = [
+  "arn:aws:iam::123456789012:user/you",                 # operator workstation
+  "arn:aws:iam::123456789012:role/sec-lab-mgmt-vm",     # mgmt VM federated role
+]
+```
+
+The second ARN is deterministic: `arn:aws:iam::<account>:role/<cluster_name>-mgmt-vm`. You can also read it from the `mgmt_vm_role_arn` output after the role exists, then add it to the list on a follow-up apply. The `mgmt_vm_role_arn` output is only populated when `mgmt_vm_gcp_sa_unique_id` is set (the federated-identity resources are count-gated on that variable).
+
+## Upgrading from a singular `cluster_admin_principal_arn`
+
+An earlier revision of this stack used a singular string variable `cluster_admin_principal_arn` and a singular `aws_eks_access_entry.admin` / `aws_eks_access_policy_association.admin` pair. Item 1 of the roadmap also introduced a separate `aws_eks_access_entry.mgmt_vm` / `aws_eks_access_policy_association.mgmt_vm` pair for the federated mgmt VM role. Both have been consolidated into a single list-driven `for_each` resource pair keyed on the ARN. If you have a pre-existing deployment, avoid destroy-and-recreate by moving state before the next apply:
+
+```bash
+# If you previously had the singular admin resource:
+terraform state mv \
+  'aws_eks_access_entry.admin[0]' \
+  'aws_eks_access_entry.admin["arn:aws:iam::123456789012:user/you"]'
+terraform state mv \
+  'aws_eks_access_policy_association.admin[0]' \
+  'aws_eks_access_policy_association.admin["arn:aws:iam::123456789012:user/you"]'
+
+# If you applied Item 1 and have the separate mgmt_vm access entry:
+terraform state mv \
+  'aws_eks_access_entry.mgmt_vm[0]' \
+  'aws_eks_access_entry.admin["arn:aws:iam::123456789012:role/sec-lab-mgmt-vm"]'
+terraform state mv \
+  'aws_eks_access_policy_association.mgmt_vm[0]' \
+  'aws_eks_access_policy_association.admin["arn:aws:iam::123456789012:role/sec-lab-mgmt-vm"]'
+```
+
+Substitute your real account ID, IAM principal, and `<cluster_name>-mgmt-vm` role name. `terraform plan` after the moves should report no changes on the admin/mgmt_vm access-entry resources. A static `moved { }` block is not written in HCL because the new address keys are ARNs that are only known at apply time (not expressable in source). If you skip the state moves the resources are simply replaced on next apply, which has brief cluster-admin unavailability but no other blast radius in a lab.
 
 ## Access the cluster
 

@@ -167,6 +167,102 @@ variable "iam_scope" {
 }
 
 ############################################
+# Cross-cloud federation (mgmt VM -> AWS / Azure)
+############################################
+
+# The mgmt VM federates into AWS IAM Roles and Azure AAD Apps using the
+# GCP service account's Google-issued OIDC ID token (see items 1 + 4 of
+# the roadmap). Terraform writes the role/app identifiers into
+# /etc/mgmt/federated-principals.json on the VM; the refresh-kubeconfigs
+# script reads that file with jq.
+#
+# These maps are defaulted to empty so the mgmt stack applies cleanly
+# before the cluster stacks exist. Populate them from each sibling
+# stack's outputs once those stacks land (e.g. via `terraform output`
+# + a data.terraform_remote_state block, or by pasting values into
+# tfvars — the lab pattern today is the latter).
+
+variable "aws_role_arns" {
+  description = "AWS IAM role ARNs the mgmt VM should federate into, keyed by a short cluster label. Source: each aws-eks-tf stack's `mgmt_vm_role_arn` output. Labels must be stable — they drive AWS CLI profile names (`mgmt-vm-<label>`) and kube-context aliases (`aws-<label>-<cluster>`)."
+  type        = map(string)
+  default     = {}
+
+  validation {
+    condition = alltrue([
+      for label in keys(var.aws_role_arns) :
+      can(regex("^[a-z0-9][a-z0-9-]{0,30}$", label))
+    ])
+    error_message = "aws_role_arns keys must be lowercase alphanumeric with optional hyphens, 1-31 chars — they are used in AWS CLI profile names and kube-context aliases."
+  }
+}
+
+variable "azure_federated_apps" {
+  description = "Azure AAD App client_id + tenant_id (+ optional subscription_ids) per cluster label. Source: each azure-aks-tf stack's `mgmt_vm_app_client_id` / `mgmt_vm_tenant_id` outputs. subscription_ids narrows AKS discovery to the listed subs; leave empty to discover across every sub the federated principal can see."
+  type = map(object({
+    client_id        = string
+    tenant_id        = string
+    subscription_ids = optional(list(string), [])
+  }))
+  default = {}
+
+  validation {
+    condition = alltrue([
+      for label in keys(var.azure_federated_apps) :
+      can(regex("^[a-z0-9][a-z0-9-]{0,30}$", label))
+    ])
+    error_message = "azure_federated_apps keys must be lowercase alphanumeric with optional hyphens, 1-31 chars."
+  }
+}
+
+variable "aws_eks_states" {
+  description = "Optional remote-state pointers to aws-eks-tf stacks. Each entry triggers a `terraform_remote_state` data source whose outputs (`mgmt_vm_role_arn`, `cluster_name`, `cluster_location`) are merged into the effective `aws_role_arns` map used by the bootstrap template. Keyed by short cluster label (same shape rules as `aws_role_arns`). Set to {} (default) to disable and use `aws_role_arns` directly. Entries here MERGE with `aws_role_arns` — explicit `aws_role_arns` entries win on key collision."
+  type = map(object({
+    bucket = string
+    key    = string
+    region = string
+  }))
+  default = {}
+
+  validation {
+    condition = alltrue([
+      for label in keys(var.aws_eks_states) :
+      can(regex("^[a-z0-9][a-z0-9-]{0,30}$", label))
+    ])
+    error_message = "aws_eks_states keys must be lowercase alphanumeric with optional hyphens, 1-31 chars — they are used in AWS CLI profile names and kube-context aliases (same constraint as aws_role_arns)."
+  }
+}
+
+variable "azure_aks_states" {
+  description = "Optional remote-state pointers to azure-aks-tf stacks. Each entry triggers a `terraform_remote_state` data source whose outputs (`mgmt_vm_app_client_id`, `mgmt_vm_tenant_id`) are merged into the effective `azure_federated_apps` map used by the bootstrap template. Keyed by short cluster label. Set to {} (default) to disable and use `azure_federated_apps` directly. subscription_ids cannot be derived from the cluster stack's state, so entries from this path always set subscription_ids = []; supply explicit `azure_federated_apps` entries when you need to pin discovery scope."
+  type = map(object({
+    resource_group_name  = string
+    storage_account_name = string
+    container_name       = string
+    key                  = string
+  }))
+  default = {}
+
+  validation {
+    condition = alltrue([
+      for label in keys(var.azure_aks_states) :
+      can(regex("^[a-z0-9][a-z0-9-]{0,30}$", label))
+    ])
+    error_message = "azure_aks_states keys must be lowercase alphanumeric with optional hyphens, 1-31 chars (same constraint as azure_federated_apps)."
+  }
+}
+
+variable "aws_regions" {
+  description = "AWS regions to scan for EKS clusters on every refresh-kubeconfigs run. Default covers the common US lab regions; override for other geos. Each region is probed per AWS label, so keep the list tight — empty regions still cost a list-clusters API call."
+  type        = list(string)
+  default     = ["us-east-1", "us-west-2"]
+
+  validation {
+    condition     = length(var.aws_regions) > 0
+    error_message = "aws_regions must contain at least one region — the AWS discovery block iterates this list."
+  }
+}
+
+############################################
 # Labels / naming
 ############################################
 

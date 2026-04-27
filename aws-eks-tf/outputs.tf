@@ -3,8 +3,8 @@ output "cluster_name" {
   value       = aws_eks_cluster.this.name
 }
 
-output "cluster_region" {
-  description = "AWS region the cluster lives in."
+output "cluster_location" {
+  description = "AWS region of the cluster. Named `cluster_location` (not `cluster_region`) for cross-stack symmetry with gcp-gke-tf and azure-aks-tf — `refresh-kubeconfigs` reads one shape across all three."
   value       = var.region
 }
 
@@ -58,4 +58,14 @@ output "kms_key_arn" {
 output "kubectl_configure_command" {
   description = "Run this to populate ~/.kube/config for the cluster."
   value       = "aws eks update-kubeconfig --region ${var.region} --name ${aws_eks_cluster.this.name}"
+}
+
+output "mgmt_vm_role_arn" {
+  description = "ARN of the IAM role the mgmt VM's GCP SA federates into via AssumeRoleWithWebIdentity. Null when mgmt_vm_gcp_sa_unique_id is unset. Feed this to the mgmt VM's AWS config profile (role_arn + web_identity_token_file)."
+  value       = try(aws_iam_role.mgmt_vm_federated[0].arn, null)
+}
+
+output "nat_gateway_public_ips" {
+  description = "Public IP(s) of the NAT Gateway(s). Egress source IP(s) seen by external services (e.g. an EDR agent's management/ingest cloud). One element when single_nat_gateway = true, otherwise one per AZ. Mirrors azure-aks-tf's `nat_gateway_public_ip` (singular) for cross-stack symmetry."
+  value       = aws_eip.nat[*].public_ip
 }

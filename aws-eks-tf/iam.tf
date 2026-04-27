@@ -113,3 +113,94 @@ resource "aws_iam_role_policy_attachment" "ebs_csi" {
   role       = aws_iam_role.ebs_csi[0].name
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy"
 }
+
+# ---------------------------------------------------------------------------
+# Cross-cloud federated identity for the mgmt VM (GCP -> AWS WIF).
+#
+# The mgmt VM running on GCP signs a JWT with its attached GCP SA, AWS STS
+# validates it against this OIDC provider, and returns short-lived creds
+# for the role below. No static AWS access keys ever touch the VM.
+#
+# All resources in this block are count-gated on var.mgmt_vm_gcp_sa_unique_id
+# being non-empty, so an apply without the variable set is a clean no-op.
+# ---------------------------------------------------------------------------
+
+# Pull Google's current certificate chain dynamically rather than hardcoding
+# the thumbprint. Same pattern as data.tls_certificate.oidc above (the EKS
+# IRSA provider), so rotation of Google's CA is a re-apply away. AWS still
+# requires a thumbprint on the OIDC provider resource even though it no
+# longer uses it to validate tokens for IAM's trusted root CAs — we supply
+# the current cert SHA-1 so the field is never stale.
+data "tls_certificate" "gcp_oidc" {
+  count = var.mgmt_vm_gcp_sa_unique_id == "" ? 0 : 1
+
+  url = "https://accounts.google.com"
+}
+
+# OIDC provider for GCP. client_id_list = ["sts.amazonaws.com"] matches the
+# "aud" claim AWS STS requires for AssumeRoleWithWebIdentity.
+resource "aws_iam_openid_connect_provider" "gcp" {
+  count = var.mgmt_vm_gcp_sa_unique_id == "" ? 0 : 1
+
+  url            = "https://accounts.google.com"
+  client_id_list = ["sts.amazonaws.com"]
+  # Index the chain root (last cert), not the leaf — AWS expects the top-most CA thumbprint.
+  thumbprint_list = [data.tls_certificate.gcp_oidc[0].certificates[length(data.tls_certificate.gcp_oidc[0].certificates) - 1].sha1_fingerprint]
+}
+
+# Role the GCP SA can assume. Trust policy pins both the subject (GCP SA
+# unique_id) and the audience (STS), so any other GCP principal minting a
+# Google-issued ID token cannot assume this role.
+resource "aws_iam_role" "mgmt_vm_federated" {
+  count = var.mgmt_vm_gcp_sa_unique_id == "" ? 0 : 1
+
+  name = "${var.cluster_name}-mgmt-vm"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Federated = aws_iam_openid_connect_provider.gcp[0].arn }
+      Action    = "sts:AssumeRoleWithWebIdentity"
+      Condition = {
+        StringEquals = {
+          "accounts.google.com:aud" = "sts.amazonaws.com"
+          "accounts.google.com:sub" = var.mgmt_vm_gcp_sa_unique_id
+        }
+      }
+    }]
+  })
+}
+
+# Minimum set of EKS API permissions for the mgmt VM to discover and
+# kubectl into the cluster. sts:GetCallerIdentity is included because
+# `aws sts get-caller-identity` is the canonical smoke test after an
+# AssumeRoleWithWebIdentity call and several debug tools invoke it
+# implicitly — it leaks no authorization surface on its own.
+resource "aws_iam_role_policy" "mgmt_vm_federated" {
+  count = var.mgmt_vm_gcp_sa_unique_id == "" ? 0 : 1
+
+  name = "${var.cluster_name}-mgmt-vm"
+  role = aws_iam_role.mgmt_vm_federated[0].id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Action = [
+        "eks:DescribeCluster",
+        "eks:ListClusters",
+        "sts:GetCallerIdentity",
+      ]
+      Resource = "*"
+    }]
+  })
+}
+
+# NOTE: access-entry / policy-association wiring for the mgmt VM role was
+# consolidated into the for_each'd `aws_eks_access_entry.admin` +
+# `aws_eks_access_policy_association.admin` pair in eks.tf. The operator is
+# expected to pass the mgmt VM role ARN (see the `mgmt_vm_role_arn` output)
+# as one of the entries in var.cluster_admin_principal_arns. Operators
+# upgrading from a revision that still had these resources must migrate
+# state — see aws-eks-tf/README.md for the `terraform state mv` commands.

@@ -27,7 +27,7 @@ resource "google_container_cluster" "this" {
   # vulnerable pods — cheap defense-in-depth. Host-privileged EDR DaemonSets
   # typically run with hostNetwork/privileged and are unaffected by pod-level
   # NetworkPolicies, so this does not conflict with an agent install.
-  datapath_provider       = "ADVANCED_DATAPATH"
+  datapath_provider        = "ADVANCED_DATAPATH"
   enable_l4_ilb_subsetting = false
 
   private_cluster_config {

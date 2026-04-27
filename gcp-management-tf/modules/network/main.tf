@@ -29,7 +29,21 @@ resource "google_compute_subnetwork" "this" {
 ############################################
 # Cloud NAT so the VM (no public IP) can reach the internet
 # for apt, docker pulls, github, gcr, etc.
+#
+# The NAT IP is reserved as a static external address so that the egress
+# IP is stable across NAT rebuilds. This is load-bearing: operators paste
+# "<nat_public_ip>/32" into each cluster stack's authorized_cidrs tfvar
+# (gcp-gke-tf, aws-eks-tf, azure-aks-tf) so the mgmt VM can reach the
+# control planes. An AUTO_ONLY NAT IP would churn on rebuild and silently
+# lock the mgmt VM out of every cluster.
 ############################################
+
+resource "google_compute_address" "nat" {
+  project      = var.project_id
+  name         = "${var.name_prefix}-nat-ip"
+  region       = var.region
+  address_type = "EXTERNAL"
+}
 
 resource "google_compute_router" "nat" {
   project = var.project_id
@@ -38,12 +52,20 @@ resource "google_compute_router" "nat" {
   network = google_compute_network.this.id
 }
 
+# NOTE: switching nat_ip_allocate_option from AUTO_ONLY to MANUAL_ONLY on
+# an already-deployed NAT forces replacement of the google_compute_router_nat.
+# That drops the current auto-allocated egress IP immediately and re-issues
+# as the static google_compute_address.nat above. For this lab (intermittent
+# clusters, destroy/re-apply is normal) that is acceptable; in a long-lived
+# environment you would reserve the static IP first, import it onto the
+# existing NAT, or plan a maintenance window.
 resource "google_compute_router_nat" "nat" {
   project                            = var.project_id
   name                               = "${var.name_prefix}-nat"
   router                             = google_compute_router.nat.name
   region                             = var.region
-  nat_ip_allocate_option             = "AUTO_ONLY"
+  nat_ip_allocate_option             = "MANUAL_ONLY"
+  nat_ips                            = [google_compute_address.nat.self_link]
   source_subnetwork_ip_ranges_to_nat = "ALL_SUBNETWORKS_ALL_IP_RANGES"
 
   log_config {

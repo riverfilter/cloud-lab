@@ -98,23 +98,27 @@ resource "aws_eks_cluster" "this" {
   ]
 }
 
-# Bootstrap cluster-admin access entry for the applying principal. Without
-# this (and with bootstrap_cluster_creator_admin_permissions = false), nobody
-# can kubectl into the cluster after creation. Set
-# cluster_admin_principal_arn to your own IAM user/role ARN.
+# Bootstrap cluster-admin access entries. Without these (and with
+# bootstrap_cluster_creator_admin_permissions = false), nobody can kubectl
+# into the cluster after creation. cluster_admin_principal_arns is validated
+# non-empty and typically contains two entries: the operator's workstation
+# IAM user/role ARN AND the mgmt VM's federated role ARN (the
+# `mgmt_vm_role_arn` output of this stack). Both get full cluster-admin
+# scope — anything narrower defeats the purpose of the lab's single kubectl
+# entry point.
 resource "aws_eks_access_entry" "admin" {
-  count = var.cluster_admin_principal_arn == "" ? 0 : 1
+  for_each = toset(var.cluster_admin_principal_arns)
 
   cluster_name  = aws_eks_cluster.this.name
-  principal_arn = var.cluster_admin_principal_arn
+  principal_arn = each.value
   type          = "STANDARD"
 }
 
 resource "aws_eks_access_policy_association" "admin" {
-  count = var.cluster_admin_principal_arn == "" ? 0 : 1
+  for_each = toset(var.cluster_admin_principal_arns)
 
   cluster_name  = aws_eks_cluster.this.name
-  principal_arn = var.cluster_admin_principal_arn
+  principal_arn = each.value
   policy_arn    = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
 
   access_scope {

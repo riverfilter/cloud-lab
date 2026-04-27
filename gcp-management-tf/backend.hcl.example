@@ -1,0 +1,6 @@
+# Copy to backend.hcl and fill in from bootstrap-state/gcp outputs.
+# backend.hcl is gitignored.
+#
+#   terraform init -backend-config=backend.hcl -migrate-state
+bucket = "REPLACE-ME-cloud-lab-tfstate"
+prefix = "gcp-management-tf"

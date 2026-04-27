@@ -1,30 +1,19 @@
 # Remote state backend.
 #
-# Uncomment and fill in once an S3 bucket + DynamoDB lock table exist. The
-# bucket MUST have versioning + default encryption enabled. Prefer a
-# customer-managed KMS key if this account is subject to compliance
-# controls.
+# Activate in two steps:
+#   1. Apply ../bootstrap-state/aws — see that stack's README for details.
+#   2. Uncomment the block below, then run
+#        terraform init -backend-config=backend.hcl -migrate-state
+#      Pass bucket / region / kms_key_id / key via backend.hcl (copy from
+#      backend.hcl.example) rather than hardcoding here, so this file
+#      stays environment-agnostic.
 #
-# Create the bucket and lock table out-of-band (chicken-and-egg with
-# Terraform-managed state):
-#
-#   aws s3api create-bucket --bucket <bucket> --region <region> \
-#     --create-bucket-configuration LocationConstraint=<region>
-#   aws s3api put-bucket-versioning --bucket <bucket> \
-#     --versioning-configuration Status=Enabled
-#   aws s3api put-bucket-encryption --bucket <bucket> \
-#     --server-side-encryption-configuration '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}'
-#   aws dynamodb create-table --table-name <lock-table> \
-#     --attribute-definitions AttributeName=LockID,AttributeType=S \
-#     --key-schema AttributeName=LockID,KeyType=HASH \
-#     --billing-mode PAY_PER_REQUEST --region <region>
+# Locking: the backend snippet uses `use_lockfile = true` — S3-native
+# conditional-write locking, available in Terraform 1.10+. Replaces the
+# historical DynamoDB lock table. If your operator pin is < 1.10, drop
+# `use_lockfile` and add `dynamodb_table = "..."` after creating an
+# aws_dynamodb_table alongside the bucket.
 #
 # terraform {
-#   backend "s3" {
-#     bucket         = "REPLACE-ME-tfstate-bucket"
-#     key            = "aws-eks-tf/sec-lab.tfstate"
-#     region         = "us-east-1"
-#     dynamodb_table = "REPLACE-ME-tfstate-locks"
-#     encrypt        = true
-#   }
+#   backend "s3" {}
 # }

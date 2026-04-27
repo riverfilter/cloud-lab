@@ -66,6 +66,93 @@ subnet_cidr    = "10.10.0.0/24"
 iam_scope = "organization"
 
 ############################################
+# Cross-cloud federation (populate after sibling stacks apply)
+############################################
+
+# AWS IAM role ARNs the mgmt VM should federate into. One entry per EKS
+# cluster. Key = short label (lowercase alphanumeric + hyphen, <=31
+# chars); value = the aws-eks-tf stack's `mgmt_vm_role_arn` output.
+# Labels drive the AWS CLI profile name (`mgmt-vm-<label>`) and kube
+# context alias (`aws-<label>-<cluster>`) — keep them stable.
+#
+# Example — uncomment and fill after aws-eks-tf applies:
+# aws_role_arns = {
+#   lab-east = "arn:aws:iam::123456789012:role/sec-lab-east-mgmt-vm"
+#   lab-west = "arn:aws:iam::123456789012:role/sec-lab-west-mgmt-vm"
+# }
+aws_role_arns = {}
+
+# Azure AAD Apps the mgmt VM should federate into. One entry per AKS
+# cluster label. client_id / tenant_id come from the azure-aks-tf
+# stack's `mgmt_vm_app_client_id` / `mgmt_vm_tenant_id` outputs.
+# subscription_ids is optional — set it when the label's AKS clusters
+# span multiple subscriptions (or when you want to pin discovery to a
+# subset). Leave empty ([]) to let the federated principal enumerate.
+#
+# Example:
+# azure_federated_apps = {
+#   lab-west = {
+#     client_id        = "00000000-0000-0000-0000-000000000000"
+#     tenant_id        = "11111111-1111-1111-1111-111111111111"
+#     subscription_ids = ["22222222-2222-2222-2222-222222222222"]
+#   }
+# }
+azure_federated_apps = {}
+
+# Regions the refresh-kubeconfigs loop scans for EKS clusters, per
+# label. Each (label, region) pair costs one aws eks list-clusters
+# call on every refresh, so keep it tight. Override for non-US geos.
+aws_regions = ["us-east-1", "us-west-2"]
+
+############################################
+# Cross-stack remote-state wiring (optional)
+############################################
+#
+# Instead of pasting `mgmt_vm_role_arn` / `mgmt_vm_app_client_id` /
+# `mgmt_vm_tenant_id` from each cluster stack into the maps above, you
+# can point this stack at each cluster stack's remote state and let
+# Terraform read those outputs directly. Entries here are MERGED with
+# the explicit maps above; explicit entries win on key collision, so
+# you can override a single label without abandoning the remote-state
+# path.
+#
+# Backends are fixed per provider: aws_eks_states uses S3, azure_aks_states
+# uses azurerm — they mirror each cluster stack's own backend block. If
+# your fleet stores cluster-stack state in a different backend, leave
+# these empty and use the explicit maps above instead.
+#
+# Apply order:
+#   1. Apply mgmt-tf with all four maps empty.
+#      Capture: service_account_unique_id, nat_public_ip.
+#   2. Apply each cluster stack with those values + `<NAT_IP>/32` in
+#      authorized_cidrs. Each cluster stack writes its outputs into its
+#      own remote state.
+#   3. Re-apply mgmt-tf with these state pointers populated. The
+#      bootstrap template re-renders federated-principals.json from the
+#      derived effective maps; cloud-init re-runs on next boot (or
+#      taint module.mgmt_vm.google_compute_instance.this to force).
+#
+# Example — uncomment after both stacks have remote backends configured:
+# aws_eks_states = {
+#   lab-east = {
+#     bucket = "my-tfstate-bucket"
+#     key    = "aws-eks-tf/lab-east/terraform.tfstate"
+#     region = "us-east-1"
+#   }
+# }
+aws_eks_states = {}
+
+# azure_aks_states = {
+#   lab-west = {
+#     resource_group_name  = "tfstate-rg"
+#     storage_account_name = "mytfstatesa"
+#     container_name       = "tfstate"
+#     key                  = "azure-aks-tf/lab-west/terraform.tfstate"
+#   }
+# }
+azure_aks_states = {}
+
+############################################
 # Labels
 ############################################
 

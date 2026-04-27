@@ -144,6 +144,20 @@ variable "local_account_disabled" {
   default     = true
 }
 
+variable "mgmt_vm_gcp_sa_unique_id" {
+  description = "Numeric unique_id of the GCP service account attached to the management VM. Used as the OIDC `sub` in the AAD federated credential on the mgmt VM's AAD App. Obtain from the gcp-management-tf output `service_account_unique_id`. Empty string disables all federated-access resources in this stack (no AAD App, no SP, no RBAC)."
+  type        = string
+  default     = ""
+
+  validation {
+    # GCP SA unique_id is a ~21-digit decimal string. Accept empty (disabled)
+    # or any all-digits value of reasonable length to catch obvious mistakes
+    # like pasting the SA email by accident.
+    condition     = var.mgmt_vm_gcp_sa_unique_id == "" || can(regex("^[0-9]{15,32}$", var.mgmt_vm_gcp_sa_unique_id))
+    error_message = "mgmt_vm_gcp_sa_unique_id must be empty, or the numeric unique_id of the GCP SA (15-32 digits). Do not pass the SA email."
+  }
+}
+
 variable "vnet_cidr" {
   description = "Primary CIDR for the lab VNet. Default avoids collision with GKE (10.20.0.0/16), EKS (10.30.0.0/16), and the common 10.0.0.0/16 Azure default."
   type        = string

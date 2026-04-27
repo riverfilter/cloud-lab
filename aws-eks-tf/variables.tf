@@ -69,10 +69,37 @@ variable "authorized_cidrs" {
   }
 }
 
-variable "cluster_admin_principal_arn" {
-  description = "IAM principal ARN (user or role) to grant EKS cluster-admin via an access entry. Leave empty to skip the bootstrap access entry (you will then need another path to kubectl). Typical value: your own IAM user/role ARN, obtainable via `aws sts get-caller-identity`."
+variable "cluster_admin_principal_arns" {
+  description = "List of IAM principal ARNs (users or roles) to grant EKS cluster-admin via access entries. Must be non-empty — `bootstrap_cluster_creator_admin_permissions = false` means an empty list produces a cluster with no admins that no one can recover. Typically includes both an operator (your workstation user/role, obtainable via `aws sts get-caller-identity`) AND the mgmt VM's federated role ARN (the `mgmt_vm_role_arn` output of this same stack, from a prior apply — or pre-compute it). BREAKING CHANGE: replaces the singular `cluster_admin_principal_arn` from earlier revisions; operators upgrading need to update terraform.tfvars and may need a `terraform state mv` (see README)."
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition     = length(var.cluster_admin_principal_arns) > 0
+    error_message = "cluster_admin_principal_arns must contain at least one ARN. An empty list produces an unusable cluster."
+  }
+
+  validation {
+    condition = alltrue([
+      for arn in var.cluster_admin_principal_arns :
+      can(regex("^arn:aws:iam::[0-9]{12}:(user|role)/", arn))
+    ])
+    error_message = "Every entry must be an IAM user or role ARN (arn:aws:iam::<account>:user/... or arn:aws:iam::<account>:role/...)."
+  }
+}
+
+variable "mgmt_vm_gcp_sa_unique_id" {
+  description = "Numeric unique_id of the GCP service account attached to the management VM. Used as the OIDC `sub` in the AWS trust policy for the cross-cloud federated role. Obtain from the gcp-management-tf output `service_account_unique_id`. Empty string disables all federated-access resources in this stack (no OIDC provider, no role, no access entry)."
   type        = string
   default     = ""
+
+  validation {
+    # GCP SA unique_id is a ~21-digit decimal string. Accept empty (disabled)
+    # or any all-digits value of reasonable length to catch obvious mistakes
+    # like pasting the SA email by accident.
+    condition     = var.mgmt_vm_gcp_sa_unique_id == "" || can(regex("^[0-9]{15,32}$", var.mgmt_vm_gcp_sa_unique_id))
+    error_message = "mgmt_vm_gcp_sa_unique_id must be empty, or the numeric unique_id of the GCP SA (15-32 digits). Do not pass the SA email."
+  }
 }
 
 variable "vpc_cidr" {

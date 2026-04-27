@@ -11,6 +11,7 @@ authorized_cidrs = [
     cidr_block   = "203.0.113.42/32"
     display_name = "my-workstation"
   },
+  #  { cidr_block = "X.X.X.X/32", display_name = "mgmt-vm-gcp" },  # from gcp-management-tf output nat_public_ip
 ]
 
 # Optional overrides — defaults are fine for most lab use.
