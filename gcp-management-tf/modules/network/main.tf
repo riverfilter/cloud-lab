@@ -52,13 +52,13 @@ resource "google_compute_router" "nat" {
   network = google_compute_network.this.id
 }
 
-# NOTE: switching nat_ip_allocate_option from AUTO_ONLY to MANUAL_ONLY on
-# an already-deployed NAT forces replacement of the google_compute_router_nat.
-# That drops the current auto-allocated egress IP immediately and re-issues
-# as the static google_compute_address.nat above. For this lab (intermittent
-# clusters, destroy/re-apply is normal) that is acceptable; in a long-lived
-# environment you would reserve the static IP first, import it onto the
-# existing NAT, or plan a maintenance window.
+# NOTE: switching nat_ip_allocate_option from AUTO_ONLY to MANUAL_ONLY is
+# an in-place update on google_compute_router_nat — both nat_ip_allocate_option
+# and nat_ips are mutable in google provider 6.x (no ForceNew, no replacement).
+# At NAT config push the egress IP flips atomically from the prior auto-allocated
+# address to the static google_compute_address.nat above; downtime is bounded by
+# that single sub-second push and existing NAT sessions persist briefly. The
+# destroy footgun lives on google_compute_address.nat itself, not on this resource.
 resource "google_compute_router_nat" "nat" {
   project                            = var.project_id
   name                               = "${var.name_prefix}-nat"

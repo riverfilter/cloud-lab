@@ -53,6 +53,16 @@ variable "use_spot_instances" {
   default     = true
 }
 
+variable "spot_instance_types" {
+  description = "Instance types offered to the Spot fleet. Diversified list (e.g. t3.small/t3a.small/t2.small) improves fill rate when individual types hit capacity ceilings; same-family ~2 GiB sizing keeps scheduling predictable. Only consulted when use_spot_instances = true; on-demand uses var.node_instance_type."
+  type        = list(string)
+  default     = ["t3.small", "t3a.small", "t2.small"]
+  validation {
+    condition     = length(var.spot_instance_types) > 0
+    error_message = "spot_instance_types must contain at least one instance type."
+  }
+}
+
 variable "authorized_cidrs" {
   description = "CIDRs allowed to reach the public EKS control plane endpoint. MUST be locked down (typically your workstation /32)."
   type        = list(string)

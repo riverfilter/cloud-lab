@@ -66,12 +66,11 @@ subsections capturing blocking and robustness findings from
 post-implementation review.** The functional path — mgmt VM → federated
 identity → static egress IP allowlisted → admin access on each cluster
 → `refresh-kubeconfigs` enumerates GKE/EKS/AKS → persistent kubectl
-sessions — is in place end-to-end, but 11 blocking + 31 robustness
-items across Items 1-5 and the P0-checklist remain open before this
-arc is production-quality. See per-item `### P0 Item N — follow-up
-from implementation review` subsections and the remaining unchecked
-boxes in P0-checklist (preflight subcommand; cluster-stack output
-renames; `terraform_remote_state` data-source wiring).
+sessions — is in place end-to-end. **All 11 originally-blocking items
+across Items 1-5 and the P0-checklist are now closed; 26 robustness
+follow-ups remain open** — quality polish rather than functional gaps.
+See per-item `### P0 Item N — follow-up from implementation review`
+subsections for the remaining unchecked boxes.
 
 This is the headline arc. Everything under this section exists to
 make a single command — `refresh-kubeconfigs` on the mgmt VM —
@@ -308,7 +307,7 @@ federated principals (see item 4).
 ### 2. Mgmt VM egress IP must be in every cluster's `authorized_cidrs`
 
 **Status:** Complete with caveats. Static NAT IP reserved and exposed
-as `nat_public_ip`; tfvars examples updated. 2 blocking + 4 robustness
+as `nat_public_ip`; tfvars examples updated. 0 blocking + 4 robustness
 follow-ups tracked in `P0 Item 2 — follow-up from implementation
 review`. Sub-item 3 (`refresh-kubeconfigs --preflight`) explicitly
 deferred and still open in the P0-checklist.
@@ -393,7 +392,7 @@ authorized_cidrs = [
 validation + `for_each`; Item 1's separate `aws_eks_access_entry.mgmt_vm`
 absorbed into the list; GKE in-cluster RBAC documented in
 `gcp-gke-tf/README.md` (option (1)); AKS already satisfied via Item 1.
-1 blocking + 4 robustness follow-ups tracked in `P0 Item 3 — follow-up
+0 blocking + 4 robustness follow-ups tracked in `P0 Item 3 — follow-up
 from implementation review`. Stretch-goal option (2) (Kubernetes
 provider for GKE binding) deferred.
 
@@ -1081,32 +1080,21 @@ Correctness + robustness review of the landed static-NAT-IP change.
 Blocking items are misleading operator guidance; robustness items
 affect destroy/re-apply ergonomics and multi-stack parallelism.
 
-- [ ] **Blocking — AUTO→MANUAL migration comment is wrong.**
-      `gcp-management-tf/modules/network/main.tf:55-61` warns that
-      flipping `nat_ip_allocate_option` from `AUTO_ONLY` to
-      `MANUAL_ONLY` "forces replacement of the
-      google_compute_router_nat". In google provider 6.x the
-      `nat_ip_allocate_option` and `nat_ips` fields are both
-      in-place updatable (no `ForceNew`); the transition is an
-      update, not a replace. Operators reading the current comment
-      will plan a maintenance window they do not need, or worse,
-      pre-destroy. Fix: rewrite the comment to describe the actual
-      behaviour — egress IP flips atomically on the update from the
-      prior auto-allocated IP to the newly reserved static IP; no
-      replacement, no downtime beyond the NAT config push.
-- [ ] **Blocking — root `nat_public_ip` output description misleads
-      when feature disabled.** `gcp-management-tf/outputs.tf:37`.
-      The description ends with "Null when create_network = false"
-      but the preceding sentence unconditionally instructs operators
-      to "Append '<IP>/32' to authorized_cidrs". An operator running
-      with `create_network = false` (BYO network path) sees
-      `nat_public_ip = null` and has no guidance; worse, the current
-      implementation offers no alternative path to discover the
-      egress IP in that mode. Fix: either (a) reword to "When
-      create_network = true this is the static egress IP; when
-      false, query your own NAT for its egress IP" or (b) make the
-      BYO path surface the IP via a new var (out of scope for this
-      item but flag in the description).
+- [x] **Blocking — AUTO→MANUAL migration comment is wrong.**
+      Resolved: comment block at `gcp-management-tf/modules/network/main.tf:55-61`
+      rewritten to describe the actual provider 6.x behaviour — in-place
+      update on the NAT (no `ForceNew`, no replacement), egress IP flips
+      atomically at NAT config push, sub-second cutover with existing
+      sessions persisting briefly via the NAT session table, and pointer
+      noting the destroy footgun lives on `google_compute_address.nat`
+      not on the NAT resource.
+- [x] **Blocking — root `nat_public_ip` output description misleads
+      when feature disabled.** Resolved: description at
+      `gcp-management-tf/outputs.tf:37` reworded to scope the
+      "append `<IP>/32` to authorized_cidrs" instruction to the
+      `create_network = true` branch and to give BYO-network operators
+      explicit guidance for the null case (query their own NAT/egress
+      for the egress IP and feed it into authorized_cidrs the same way).
 - [ ] **Robustness — global name collision on
       `${var.name_prefix}-nat-ip`.**
       `gcp-management-tf/modules/network/main.tf:43`.
@@ -1157,16 +1145,16 @@ consolidation. Blocking items produce a silently-broken mgmt VM or
 stale operator guidance; robustness items degrade under non-default
 workflows.
 
-- [ ] **Blocking — stack-local `aws-eks-tf/roadmap.md` still
-      references the removed singular variable.**
-      `aws-eks-tf/roadmap.md:13` and `aws-eks-tf/roadmap.md:22`
-      instruct the operator to set `cluster_admin_principal_arn`
-      (singular). That variable no longer exists; an operator reading
-      this file first will paste a name Terraform will reject at
-      parse (`Unsupported argument`) unless they also read the
-      tfvars example. Fix: rename both references to
-      `cluster_admin_principal_arns` and update the description to
-      mention the mgmt VM role ARN as the canonical second entry.
+- [x] **Blocking — stack-local `aws-eks-tf/roadmap.md` still
+      references the removed singular variable.** Resolved: both
+      references in `aws-eks-tf/roadmap.md` (deployment-assumptions
+      paragraph and the operator prerequisite) renamed to
+      `cluster_admin_principal_arns`, phrased as a list, with the
+      mgmt VM federated role ARN called out as the canonical second
+      entry alongside the operator's IAM user/role ARN. Example value
+      in the prerequisite updated from a bare ARN string to a list,
+      with a note that the mgmt VM role ARN can be added either
+      pre-computed or after first apply via `mgmt_vm_role_arn`.
 - [ ] **Robustness — silent-failure mode when operator uses the
       two-apply dance without the mgmt VM ARN.** `aws-eks-tf/README.md:47-49`
       offers two valid ways to add the mgmt VM role ARN to the list:
@@ -1502,6 +1490,8 @@ variable "spot_instance_types" {
 instance_types = var.use_spot_instances ? var.spot_instance_types : [var.node_instance_type]
 ```
 
+**Status:** Done. spot_instance_types variable added with t3/t3a/t2.small default; instance_types in node group switches on use_spot_instances.
+
 ### 7. EKS "additional" security groups are empty dead code
 
 **Why it matters.** `aws_security_group.cluster` at
@@ -1521,6 +1511,8 @@ traffic for the current topology.
 # and drop `security_group_ids = [aws_security_group.cluster.id]`
 # from aws_eks_cluster.this.vpc_config.
 ```
+
+**Status:** Done. Both SGs deleted; aws_eks_cluster.this.vpc_config no longer references them.
 
 ### 8. Output naming drift across cluster stacks
 
@@ -1621,6 +1613,8 @@ terraform {
 Run `terraform init -upgrade` after to refresh
 `.terraform.lock.hcl`.
 
+**Status:** Done. Root pin bumped to ~> 6.12 with upper-bound required_version (>= 1.5.0, < 2.0.0); submodule versions.tf files deleted (modules/iam, modules/network, modules/mgmt-vm — all only used the google provider, which is inherited from root). .terraform.lock.hcl regenerated; constraints now show ~> 6.12 / ~> 6.12 / ~> 3.6.
+
 ### 10. CIDR allocation is undocumented
 
 **Why it matters.** Lightweight item but becomes load-bearing the
@@ -1658,6 +1652,8 @@ is outside the user VPC.
 EKS VPC CNI uses VPC primary IPs for pods (no separate range).
 ```
 
+**Status:** Done. CIDRS.md written at repo root with the verified allocations.
+
 ### 18. `terraform_remote_state` data sources hard-code `s3` and `azurerm` backends
 
 **Why it matters.** The cross-stack remote-state wiring landed in
@@ -1692,6 +1688,20 @@ Documented in `gcp-management-tf/remote_states.tf` header and in
 
 ### 19. `azurerm_kubernetes_cluster_maintenance_configuration` not in installed azurerm version
 
+**Status:** Done. Resolved by Option B — deleted the
+`azurerm_kubernetes_cluster_maintenance_configuration "default"`
+block (and its preceding comment near line 161 in `aks.tf`) rather
+than bumping the provider pin to chase a non-goal feature. Now
+consistent with P2 item 13 ("Maintenance window alignment — NOT
+DOING"): clusters in this lab are routinely destroyed when idle, so
+a recurring weekly maintenance window has no purpose. While
+validating the fix, a latent rename also surfaced in the same file
+(`network_dataplane` -> `network_data_plane` on the
+`network_profile` block) and was corrected so `terraform validate`
+returns green. Validate now passes with one unrelated deprecation
+warning on `azurerm_monitor_diagnostic_setting.metric` (slated for
+removal in azurerm v5.0; tracked separately).
+
 **Why it matters.** `terraform validate` against `azure-aks-tf/`
 fails with an unknown-resource error on
 `azurerm_kubernetes_cluster_maintenance_configuration`. Surfaced
@@ -1703,15 +1713,119 @@ version in `azure-aks-tf/versions.tf` predates that resource type
 landing in the provider, OR the resource name has been renamed
 upstream and the pin needs bumping.
 
-**Proposed fix.** Cross-reference `azure-aks-tf/aks.tf` for the
-exact resource block, check the `azurerm` provider changelog for
-when `azurerm_kubernetes_cluster_maintenance_configuration` (or its
-renamed equivalent — `automatic_channel_upgrade` ⇒ `maintenance_window`
-shapes have churned) actually shipped, then either bump the pin in
-`versions.tf` or rewrite the resource to whatever shape the current
-pin supports. Test with `terraform validate` post-change. The
-maintenance window is a P2#13 explicit non-goal so the simplest fix
-may be to delete the resource entirely.
+**Status:** Done. Resolved by Option B — deleted the
+`azurerm_kubernetes_cluster_maintenance_configuration "default"` resource
+from `azure-aks-tf/aks.tf` (consistent with P2#13: maintenance window
+alignment is a non-goal for this lab; clusters are routinely destroyed
+when idle). Also fixed a latent `network_dataplane` → `network_data_plane`
+rename surfaced by validate. `terraform validate` now passes (one
+unrelated `metric` block deprecation warning tracked as item 20 below).
+
+**Proposed fix (deferred — see Status above).** Cross-reference
+`azure-aks-tf/aks.tf` for the exact resource block, check the `azurerm`
+provider changelog for when `azurerm_kubernetes_cluster_maintenance_configuration`
+(or its renamed equivalent — `automatic_channel_upgrade` ⇒
+`maintenance_window` shapes have churned) actually shipped, then either
+bump the pin in `versions.tf` or rewrite the resource to whatever shape
+the current pin supports. Test with `terraform validate` post-change.
+
+### 20. `azurerm_monitor_diagnostic_setting.aks` uses deprecated `metric` block
+
+**Why it matters.** `azure-aks-tf/aks.tf:229-232` declares a
+`metric { category = "AllMetrics" enabled = true }` block. The current
+azurerm pin (`~> 4.14`, lock at `4.70.0`) emits a deprecation warning
+on every `validate`/`plan`: `metric has been deprecated in favour of
+the enabled_metric property and will be removed in v5.0 of the AzureRM
+provider`. Confirmed against the provider source — the `metric` schema
+is gated on `!features.FivePointOh()` and `ConflictsWith =
+["enabled_metric"]`. When the next major (`v5.0`) lands, this stack
+will fail `validate` outright until the block is replaced.
+
+**Proposed fix.** Replace the deprecated block with the new shape. No
+`enabled` field — presence in the new schema implies enabled.
+
+```hcl
+# azure-aks-tf/aks.tf — replace the metric block
+enabled_metric {
+  category = "AllMetrics"
+}
+```
+
+`AllMetrics` was the only valid category here, so no behavioural
+change. Verify post-change with `terraform validate` (warning should
+clear) and `terraform plan` (should show in-place update on the
+diagnostic setting, no recreate).
+
+### 21. `init -upgrade` does not always rewrite `.terraform.lock.hcl` constraints — operator gotcha
+
+**Why it matters.** When bumping a provider pin in `versions.tf`
+(e.g. the `~> 6.10` → `~> 6.12` bump in item 9), the standard
+incantation `terraform init -upgrade` is supposed to refresh the lock
+file. In practice: if the previously-resolved provider version *also*
+satisfies the new constraint (e.g. `6.50.0` satisfies both `~> 6.10`
+and `~> 6.12`), Terraform sees no work to do, **skips the lock file
+rewrite**, and the `constraints = "~> 6.10"` line silently survives
+the bump. Future operators reading the lock file see a constraint
+that doesn't match the source-of-truth `.tf` declaration. CI
+lockfile-drift checks fail spuriously.
+
+**Proposed fix (operator workflow note, not code).** Document in
+`gcp-management-tf/README.md` and any other stack README with a
+provider pin: when bumping a major-minor pin, run `rm
+.terraform.lock.hcl && terraform init -upgrade` instead of plain
+`init -upgrade`. (Removing `.terraform/` alone is insufficient —
+Terraform reuses cached resolution data.) Optional: add a `make
+refresh-lock` Makefile target across stacks that does this atomically.
+
+### 22. Doc-drift cleanup from P1 pass — stale references to deleted resources
+
+**Why it matters.** Several docs survived the P1 deletions referenced
+in items 7 and 19 with stale claims that point operators at resources
+that no longer exist:
+
+1. `aws-eks-tf/README.md:133` — `> Optionally, tighten the
+   ${cluster_name}-nodes-sg security group for east-west traffic.`
+   That SG was deleted in P1#7.
+2. `aws-eks-tf/README.md:117` — OOM-recovery advice says "bump
+   `node_instance_type` to `t3.medium`". With the default
+   `use_spot_instances = true`, that variable is now ignored (the
+   Spot path uses `spot_instance_types`).
+3. `azure-aks-tf/README.md:16` — Lists "Weekly Saturday 06:00-10:00
+   UTC maintenance window" as a feature. Resource deleted in P1#19.
+4. `azure-aks-tf/roadmap.md:68` — `- [x] Separate
+   maintenance_configuration — Saturday 06:00-10:00 UTC` checkbox is
+   checked but the resource no longer exists.
+5. `azure-aks-tf/aks.tf:71` — Comment text `network_dataplane =
+   "cilium"` (prose) inconsistent with the corrected arg
+   `network_data_plane` one line down at `:83`.
+6. `proj_roadmap.md` `### 10.` "Current allocation" table — claims
+   `/19 per AZ from the /16` for `aws-eks-tf`; actual code at
+   `aws-eks-tf/network.tf:20-21` (`cidrsubnet(var.vpc_cidr, 4, i)`)
+   produces `/20`. CIDRS.md has it right; this row pre-dates the P1
+   pass and was missed.
+
+**Proposed fix.** Single doc-pass touching the six sites above. None
+affect runtime behaviour — purely review-surface drift. Mechanical
+edits per site listed inline.
+
+### 23. `node_instance_type` description should cross-reference Spot
+
+**Why it matters.** `aws-eks-tf/variables.tf:27-31` describes
+`node_instance_type` without noting that it's only used when
+`use_spot_instances = false`. The sibling variable `spot_instance_types`
+correctly cross-references back ("on-demand uses var.node_instance_type").
+The asymmetry will mislead operators who edit `node_instance_type`
+while Spot is on, plan, and see no diff.
+
+**Proposed fix.** Append one sentence to the description:
+
+```hcl
+variable "node_instance_type" {
+  description = "EC2 instance type for the managed node group. t3.small = 2 vCPU / 2 GiB, the closest analog to GCP e2-small. Adequate for a typical EDR agent DaemonSet (~500m CPU / 512 Mi–1 GiB memory) plus a few lightweight lab pods. Only consulted when use_spot_instances = false; otherwise see spot_instance_types."
+  type        = string
+  default     = "t3.small"
+}
+```
 
 ---
 

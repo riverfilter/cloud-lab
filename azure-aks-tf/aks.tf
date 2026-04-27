@@ -80,7 +80,7 @@ resource "azurerm_kubernetes_cluster" "this" {
     network_plugin      = "azure"
     network_plugin_mode = "overlay"
     network_policy      = "cilium"
-    network_dataplane   = "cilium"
+    network_data_plane  = "cilium"
     outbound_type       = "userAssignedNATGateway"
     load_balancer_sku   = "standard"
     pod_cidr            = var.pod_cidr
@@ -157,11 +157,6 @@ resource "azurerm_kubernetes_cluster" "this" {
     )
   }
 
-  # Maintenance window is defined in the separate
-  # azurerm_kubernetes_cluster_maintenance_configuration resource below.
-  # Avoid setting both the inline maintenance_window block and the separate
-  # resource — azurerm warns they conflict.
-
   # Azure KeyVault KMS etcd encryption intentionally skipped. Adds a Key Vault
   # dependency (HSM, access policy, CMK rotation) that complicates destroy
   # and is overkill for a lab. Roadmap item.
@@ -200,21 +195,6 @@ resource "azurerm_kubernetes_cluster" "this" {
       # which silently dropped resize requests on apply.
       kubernetes_version,
     ]
-  }
-}
-
-# Weekly maintenance window — Saturday 06:00-10:00 UTC, matching the GKE
-# stack. Keeps AKS auto-upgrades (node image rolls, patch-level bumps)
-# predictable. The "aksManagedNodeOSUpgradeSchedule" and
-# "aksManagedAutoUpgradeSchedule" configurations are the two that matter;
-# we use the umbrella "default" here for simplicity.
-resource "azurerm_kubernetes_cluster_maintenance_configuration" "default" {
-  name                  = "default"
-  kubernetes_cluster_id = azurerm_kubernetes_cluster.this.id
-
-  allowed {
-    day   = "Saturday"
-    hours = [6, 7, 8, 9]
   }
 }
 

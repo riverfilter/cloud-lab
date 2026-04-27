@@ -40,16 +40,6 @@ resource "aws_cloudwatch_log_group" "cluster" {
   retention_in_days = var.control_plane_log_retention_days
 }
 
-resource "aws_security_group" "cluster" {
-  name        = "${var.cluster_name}-cluster-sg"
-  description = "Additional SG for the EKS control plane ENIs. EKS creates its own managed SG; this is for allowlisting in-VPC sources if needed."
-  vpc_id      = aws_vpc.this.id
-
-  tags = {
-    Name = "${var.cluster_name}-cluster-sg"
-  }
-}
-
 resource "aws_eks_cluster" "this" {
   name     = var.cluster_name
   role_arn = aws_iam_role.cluster.arn
@@ -73,7 +63,9 @@ resource "aws_eks_cluster" "this" {
     endpoint_private_access = true # Private endpoint ON so in-VPC workloads (and a future bastion) don't hairpin through NAT.
     endpoint_public_access  = true # Public endpoint ON but locked down below.
     public_access_cidrs     = var.authorized_cidrs
-    security_group_ids      = [aws_security_group.cluster.id]
+    # No additional security_group_ids — EKS attaches its managed cluster SG
+    # automatically and that handles all required control-plane <-> node
+    # traffic for this topology.
   }
 
   # Envelope-encrypt Kubernetes Secrets with the CMK created above. This is
@@ -126,21 +118,6 @@ resource "aws_eks_access_policy_association" "admin" {
   }
 
   depends_on = [aws_eks_access_entry.admin]
-}
-
-# Security group for the node group. EKS creates its own cluster-level SG
-# and attaches it to nodes via the managed node group, so we only need this
-# for extra rules (intentionally none today — rely on VPC CNI + NetworkPolicy
-# for pod-level controls).
-resource "aws_security_group" "nodes" {
-  name        = "${var.cluster_name}-nodes-sg"
-  description = "Additional SG for EKS worker nodes. Empty by default; add rules here for lab-specific east-west allowlists."
-  vpc_id      = aws_vpc.this.id
-
-  tags = {
-    Name                                        = "${var.cluster_name}-nodes-sg"
-    "kubernetes.io/cluster/${var.cluster_name}" = "owned"
-  }
 }
 
 # Launch template so we can enforce IMDSv2 and control the EBS root volume.
@@ -215,7 +192,7 @@ resource "aws_eks_node_group" "primary" {
   subnet_ids      = aws_subnet.private[*].id
 
   capacity_type  = var.use_spot_instances ? "SPOT" : "ON_DEMAND"
-  instance_types = [var.node_instance_type]
+  instance_types = var.use_spot_instances ? var.spot_instance_types : [var.node_instance_type]
 
   scaling_config {
     desired_size = var.node_count

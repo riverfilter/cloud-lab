@@ -10,8 +10,10 @@ Living document. Tasks will be checked off as implementation lands.
   `terraform.tfvars`.
 - No local AWS CLI profile, account ID, or principal from the authoring
   machine has been baked into defaults. `authorized_cidrs` and
-  `cluster_admin_principal_arn` are operator-supplied with placeholder
-  examples in the example tfvars.
+  `cluster_admin_principal_arns` (a list) are operator-supplied with
+  placeholder examples in the example tfvars. The mgmt VM federated role
+  ARN is the canonical second entry alongside the operator's own IAM
+  user/role ARN.
 - The applying principal authenticates wherever the apply actually runs
   (CI runner, bastion, workstation) via the AWS SDK default credential
   chain — the stack does not care how.
@@ -19,9 +21,15 @@ Living document. Tasks will be checked off as implementation lands.
 ## Prerequisites the operator must provide before `apply`
 
 - [ ] **`authorized_cidrs`** — at least one /32, no 0.0.0.0/0.
-- [ ] **`cluster_admin_principal_arn`** — your own IAM user or role ARN,
-      obtainable via `aws sts get-caller-identity --query Arn`.
-      Without it, no principal has kubectl access after apply.
+- [ ] **`cluster_admin_principal_arns`** — list of IAM user/role ARNs
+      granted cluster-admin via EKS access entries. Your own ARN is
+      obtainable via `aws sts get-caller-identity --query Arn`. Example:
+      `["arn:aws:iam::123456789012:user/you"]`. The mgmt VM federated
+      role ARN (`arn:aws:iam::<account>:role/<cluster_name>-mgmt-vm`)
+      should be added as a second entry — either pre-computed before
+      first apply, or appended after first apply by reading the
+      `mgmt_vm_role_arn` output. Without at least one entry, no
+      principal has kubectl access after apply.
 - [ ] Sufficient IAM to create VPC / EKS / EC2 / IAM / KMS / CloudWatch
       Logs resources. A fresh account with an admin user is fine; tighten
       before reuse in a shared account.

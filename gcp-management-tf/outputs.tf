@@ -34,6 +34,6 @@ output "ssh_via_iap_command" {
 }
 
 output "nat_public_ip" {
-  description = "Static egress IP of the management VM. Append '<IP>/32' to authorized_cidrs in gcp-gke-tf, aws-eks-tf, and azure-aks-tf tfvars so the mgmt VM can reach each cluster's control plane. Null when create_network = false."
+  description = "Static egress IP of the mgmt VM, when create_network = true. Append '<IP>/32' to each cluster's authorized_cidrs (gcp-gke-tf, aws-eks-tf, azure-aks-tf tfvars) so kubectl from the mgmt VM can reach the control plane. Null when create_network = false (BYO network) — in that mode, query your own NAT/egress for the egress IP and feed it into authorized_cidrs the same way."
   value       = var.create_network ? module.network[0].nat_public_ip : null
 }
