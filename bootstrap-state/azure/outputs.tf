@@ -13,6 +13,11 @@ output "container_name" {
   value       = azurerm_storage_container.tfstate.name
 }
 
+output "container_resource_id" {
+  description = "Resource Manager ID of the tfstate container — use as the scope when granting an external principal access out-of-band."
+  value       = azurerm_storage_container.tfstate.resource_manager_id
+}
+
 output "backend_snippet" {
   description = "Drop-in backend block for each sibling Azure stack's backend.tf. Replace <stack-name>/<env> with e.g. `azure-aks-tf/sec-lab`. `use_azuread_auth = true` is required because shared_access_key_enabled = false on the storage account."
   value       = <<-EOT

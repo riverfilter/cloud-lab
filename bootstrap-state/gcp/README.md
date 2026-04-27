@@ -27,7 +27,8 @@ For each of `gcp-management-tf/` and `gcp-gke-tf/`:
 2. `terraform init -migrate-state` — Terraform prompts to copy local state into the bucket.
 3. Commit the updated `backend.tf` (never commit `backend.hcl`; it is gitignored).
 
-GCS backends lock natively via the generation-checked lock object; no
+GCS backends use an advisory lock object with generation-checked
+writes; adequate for sequential operators, not a distributed mutex. No
 DynamoDB-equivalent sidecar is needed.
 
 ## Teardown

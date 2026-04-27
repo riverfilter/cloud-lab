@@ -370,7 +370,14 @@ chmod 0644 /etc/mgmt/federated-principals.json
 # Persona group — used for owning the token files so the VM user can
 # read them but no-one else can. `useradd -m` in phase 6 created the
 # user's primary group matching the username.
-PERSONA_GROUP="$(id -gn "$VM_USER")"
+PERSONA_GROUP="$(id -gn "$VM_USER" 2>/dev/null || true)"
+# Fail loud + early if the group is unresolved (NSS timing, user
+# creation hiccup, bootstrap re-ordering). Several systemd unit
+# heredocs below interpolate $${PERSONA_GROUP} at bootstrap time —
+# an empty value would yield `Group=` and a cryptic systemd parse
+# error at `systemctl start` time. The bash `$${VAR:?msg}` idiom
+# aborts the script with a clear message instead.
+: "$${PERSONA_GROUP:?persona group unresolved — ensure phase 6 (user creation) ran before phase 8 (federation)}"
 
 # --- id-token writer ---
 # Pulls a Google-signed OIDC ID token for the passed audience from the
@@ -432,6 +439,12 @@ chmod 0755 /usr/local/sbin/mgmt-write-id-token
 # RuntimeDirectory=mgmt gives us a fresh /var/run/mgmt owned by
 # root:$PERSONA_GROUP on every boot, so the persona user can read the
 # token files without us having to manage the directory by hand.
+#
+# Defensive re-guard: PERSONA_GROUP is also checked at its assignment
+# site, but the heredoc below is unquoted (<<SERVICE) so $${PERSONA_GROUP}
+# expands at bootstrap time. If anything between :373 and here ever
+# clears the variable, fail loudly rather than emit `Group=`.
+: "$${PERSONA_GROUP:?persona group unresolved — ensure phase 6 (user creation) ran before phase 8 (federation)}"
 cat >/etc/systemd/system/mgmt-gcp-id-token.service <<SERVICE
 [Unit]
 Description=Refresh GCP-signed ID tokens for AWS and Azure federation
@@ -494,10 +507,12 @@ fi
 # every credential refresh (keeps persistent kubectl sessions alive
 # past the 1h STS credential lifetime).
 #
-# We pick us-east-1 as the default region for each profile. The
+# We deliberately do NOT set a `region =` default. The
 # refresh-kubeconfigs Azure/AWS loops iterate var.aws_regions explicitly
-# via --region, so the profile default only matters for ad-hoc `aws ...`
-# commands the operator runs directly.
+# via --region, so they don't need it. For ad-hoc `aws ...` commands,
+# omitting the default forces operators to pass --region explicitly,
+# which prevents the silent "I queried us-east-1 only and concluded
+# my west clusters are gone" failure mode.
 install -d -o "$VM_USER" -g "$PERSONA_GROUP" -m 0700 "$USER_HOME/.aws"
 AWS_CFG="$USER_HOME/.aws/config"
 : > "$AWS_CFG"
@@ -506,10 +521,10 @@ while IFS=$'\t' read -r label role_arn; do
   [[ -z "$label" ]] && continue
   cat >>"$AWS_CFG" <<PROFILE
 [profile mgmt-vm-$${label}]
+# region intentionally unset — supply --region explicitly to avoid silent us-east-1-only scans
 role_arn                = $${role_arn}
 web_identity_token_file = /var/run/mgmt/gcp-id-token-aws
 duration_seconds        = 3600
-region                  = us-east-1
 role_session_name       = mgmt-vm-$${label}
 
 PROFILE
@@ -525,27 +540,45 @@ chmod 0600 "$AWS_CFG"
 # have to override $AZURE_TENANT_ID / $AZURE_CLIENT_ID before `kubectl`
 # or use `az login --identity` with a different federated credential.
 AZURE_PROFILE_D=/etc/profile.d/mgmt-azure-federated.sh
-AZ_FIRST_LABEL="$(jq -r '.azure_federated_apps | to_entries | (.[0].key // "")' /etc/mgmt/federated-principals.json)"
-AZ_FIRST_CLIENT_ID="$(jq -r '.azure_federated_apps | to_entries | (.[0].value.client_id // "")' /etc/mgmt/federated-principals.json)"
-AZ_FIRST_TENANT_ID="$(jq -r '.azure_federated_apps | to_entries | (.[0].value.tenant_id // "")' /etc/mgmt/federated-principals.json)"
 AZ_LABEL_COUNT="$(jq -r '.azure_federated_apps | length' /etc/mgmt/federated-principals.json)"
 
-{
-  echo "# Managed by /etc/mgmt/bootstrap.sh. Do not edit by hand."
-  echo "# Azure workload-identity env vars consumed by kubelogin -l workloadidentity."
-  echo "export AZURE_FEDERATED_TOKEN_FILE=/var/run/mgmt/gcp-id-token-azure"
-  echo "export AZURE_AUTHORITY_HOST=https://login.microsoftonline.com/"
-  echo "export AZURE_CLIENT_ID='$${AZ_FIRST_CLIENT_ID}'"
-  echo "export AZURE_TENANT_ID='$${AZ_FIRST_TENANT_ID}'"
-  if [[ "$AZ_LABEL_COUNT" -gt 1 ]]; then
-    echo "# NOTE: $${AZ_LABEL_COUNT} azure_federated_apps entries detected."
-    echo "# The default exports above point at '$${AZ_FIRST_LABEL}'. To hit another tenant,"
-    echo "# override AZURE_CLIENT_ID and AZURE_TENANT_ID in your shell before kubectl:"
-    echo "#   export AZURE_CLIENT_ID=<client-id-from-federated-principals.json>"
-    echo "#   export AZURE_TENANT_ID=<tenant-id-from-federated-principals.json>"
-  fi
-} > "$AZURE_PROFILE_D"
-chmod 0644 "$AZURE_PROFILE_D"
+# Only emit the profile.d exports if we actually have an Azure
+# federated app to point at. With zero apps configured, jq's
+# `(.[0].value.client_id // "")` returns "" and the script would
+# export AZURE_CLIENT_ID='' / AZURE_TENANT_ID='' — masking
+# kubelogin's own "client_id required" error if an operator later
+# adds an AKS context by hand. Skipping the file entirely keeps the
+# operator's shell free of stale empty exports; kubelogin then
+# surfaces its own diagnostic.
+if [[ "$AZ_LABEL_COUNT" -gt 0 ]]; then
+  AZ_FIRST_LABEL="$(jq -r '.azure_federated_apps | to_entries | (.[0].key // "")' /etc/mgmt/federated-principals.json)"
+  AZ_FIRST_CLIENT_ID="$(jq -r '.azure_federated_apps | to_entries | (.[0].value.client_id // "")' /etc/mgmt/federated-principals.json)"
+  AZ_FIRST_TENANT_ID="$(jq -r '.azure_federated_apps | to_entries | (.[0].value.tenant_id // "")' /etc/mgmt/federated-principals.json)"
+
+  {
+    echo "# Managed by /etc/mgmt/bootstrap.sh. Do not edit by hand."
+    echo "# Azure workload-identity env vars consumed by kubelogin -l workloadidentity."
+    echo "export AZURE_FEDERATED_TOKEN_FILE=/var/run/mgmt/gcp-id-token-azure"
+    echo "export AZURE_AUTHORITY_HOST=https://login.microsoftonline.com/"
+    echo "export AZURE_CLIENT_ID='$${AZ_FIRST_CLIENT_ID}'"
+    echo "export AZURE_TENANT_ID='$${AZ_FIRST_TENANT_ID}'"
+    if [[ "$AZ_LABEL_COUNT" -gt 1 ]]; then
+      echo "# NOTE: $${AZ_LABEL_COUNT} azure_federated_apps entries detected."
+      echo "# The default exports above point at '$${AZ_FIRST_LABEL}'. To hit another tenant,"
+      echo "# override AZURE_CLIENT_ID and AZURE_TENANT_ID in your shell before kubectl:"
+      echo "#   export AZURE_CLIENT_ID=<client-id-from-federated-principals.json>"
+      echo "#   export AZURE_TENANT_ID=<tenant-id-from-federated-principals.json>"
+    fi
+  } > "$AZURE_PROFILE_D"
+  chmod 0644 "$AZURE_PROFILE_D"
+else
+  # No azure_federated_apps configured at apply time. Remove any
+  # stale file from a previous apply so operator shells don't carry
+  # forward empty exports that would mask kubelogin's own
+  # "client_id required" error.
+  rm -f "$AZURE_PROFILE_D"
+  echo "[bootstrap] Azure: zero azure_federated_apps configured — skipping $AZURE_PROFILE_D"
+fi
 
 ########################################
 # 9. kubeconfig refresh
@@ -563,9 +596,11 @@ cat >/usr/local/bin/refresh-kubeconfigs <<'REFRESH'
 # errors do not abort the Azure loop, and vice versa.
 #
 # Context aliases are normalised to "<cloud>-<label>-<cluster>":
-#   gke-<project>-<cluster>        (GCP — label == project ID)
-#   aws-<label>-<cluster>          (AWS — label from aws_role_arns key)
-#   azure-<label>-<cluster>        (Azure — label from azure_federated_apps key)
+#   gke-<project>-<location>-<cluster>  (GCP — label == project ID; location preserved
+#                                        so multi-region clusters with the same name
+#                                        don't collide on rename)
+#   aws-<label>-<cluster>                (AWS — label from aws_role_arns key)
+#   azure-<label>-<cluster>              (Azure — label from azure_federated_apps key)
 # This prevents collisions between clusters with the same short name
 # across clouds (e.g. two "sec-lab" clusters in GKE + EKS).
 #
@@ -847,8 +882,12 @@ for proj in "$${PROJECTS[@]}"; do
     # context name is gke_<proj>_<loc>_<name>; two clusters named the
     # same across GCP/AWS/Azure would otherwise be indistinguishable
     # only by prefix underscore vs dash.
+    #
+    # Location is preserved in the alias (gke-<proj>-<loc>-<name>) so
+    # two clusters named the same in different regions/zones (e.g.
+    # `lab` in us-central1 and us-east1-a) don't collide on rename.
     old_ctx="gke_$${proj}_$${loc}_$${name}"
-    new_ctx="gke-$${proj}-$${name}"
+    new_ctx="gke-$${proj}-$${loc}-$${name}"
     if kubectl config get-contexts -o name | grep -qx "$old_ctx"; then
       kubectl config rename-context "$old_ctx" "$new_ctx" >/dev/null || true
     fi

@@ -13,7 +13,6 @@ Minimal, cost-optimized AKS cluster for a security research lab on Azure. Design
 - **Azure RBAC for Kubernetes** on, local accounts disabled — kubectl goes through AAD
 - Single default node pool, 2x `Standard_B2s` on-demand by default, 30 GB managed Premium_LRS OS disk each
 - Public API server endpoint **restricted** to `authorized_cidrs`
-- Weekly Saturday 06:00-10:00 UTC maintenance window
 - Optional Spot user node pool (off by default — see cost notes)
 - Optional Log Analytics diagnostic settings (off by default)
 

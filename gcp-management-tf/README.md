@@ -182,6 +182,22 @@ sudo BOOTSTRAP_LOGGING= bash <(gcloud compute instances describe mgmt-vm \
     └── bootstrap.sh.tpl    # first-boot + re-runnable provisioning
 ```
 
+### Bumping provider pins
+
+When changing a `~> X.Y` constraint in `versions.tf`, plain `terraform
+init -upgrade` may skip rewriting the `constraints =` line in
+`.terraform.lock.hcl` if the already-resolved provider version satisfies
+both old and new constraints. The lock file then carries a stale
+constraint string that doesn't match `versions.tf`.
+
+To force a clean refresh:
+
+    rm .terraform.lock.hcl
+    terraform init -upgrade
+
+Removing `.terraform/` alone is insufficient — Terraform reuses cached
+resolution data.
+
 ## Security posture
 
 - OS Login enforced; project-wide SSH keys blocked.

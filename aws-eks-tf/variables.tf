@@ -25,7 +25,7 @@ variable "cluster_version" {
 }
 
 variable "node_instance_type" {
-  description = "EC2 instance type for the managed node group. t3.small = 2 vCPU / 2 GiB, the closest analog to GCP e2-small. Adequate for a typical EDR agent DaemonSet (~500m CPU / 512 Mi–1 GiB memory) plus a few lightweight lab pods."
+  description = "EC2 instance type for the managed node group. t3.small = 2 vCPU / 2 GiB, the closest analog to GCP e2-small. Adequate for a typical EDR agent DaemonSet (~500m CPU / 512 Mi–1 GiB memory) plus a few lightweight lab pods. Only consulted when use_spot_instances = false; otherwise see spot_instance_types."
   type        = string
   default     = "t3.small"
 }

@@ -1260,7 +1260,7 @@ findings below are runtime behaviours `bash -n` cannot catch.
       --context <ctx>` per-context. Low probability, but defence in
       depth matches the "block is tolerant of the others" header
       comment.
-- [ ] **Robustness — `AZ_FIRST_CLIENT_ID` / `AZ_FIRST_TENANT_ID`
+- [x] **Robustness — `AZ_FIRST_CLIENT_ID` / `AZ_FIRST_TENANT_ID`
       default to empty strings when `azure_federated_apps` is `{}`.**
       `gcp-management-tf/scripts/bootstrap.sh.tpl:530-532, 540-541`.
       jq's `(.[0].value.client_id // "")` on an empty array returns
@@ -1271,8 +1271,13 @@ findings below are runtime behaviours `bash -n` cannot catch.
       client_id-is-empty error. Fix: guard the whole block on
       `[[ "$AZ_LABEL_COUNT" -gt 0 ]]` — when zero apps are
       configured, skip writing profile.d entirely (or write only the
-      token-file + authority-host lines and a comment).
-- [ ] **Robustness — `PERSONA_GROUP` expansion in the systemd unit
+      token-file + authority-host lines and a comment). **Done.**
+      Wrapped the entire profile.d-emit block in
+      `if [[ "$AZ_LABEL_COUNT" -gt 0 ]]; then ... else rm -f $AZURE_PROFILE_D; fi`
+      so zero-app installs leave no stale empty exports in operator
+      shells (and any prior file from a previous apply is removed),
+      letting kubelogin surface its own client_id-required diagnostic.
+- [x] **Robustness — `PERSONA_GROUP` expansion in the systemd unit
       heredoc has no fallback if `id -gn` fails.**
       `gcp-management-tf/scripts/bootstrap.sh.tpl:373, 444-455`.
       `<<SERVICE` is unquoted so `Group=${PERSONA_GROUP}` is expanded
@@ -1282,7 +1287,13 @@ findings below are runtime behaviours `bash -n` cannot catch.
       subsequent `systemctl start` reports a cryptic parse error. Fix:
       `: "${PERSONA_GROUP:?persona group unresolved — phase 6 must run before phase 8}"`
       guard before the heredoc, and/or add the guard at the top of
-      phase 8.
+      phase 8. **Done.** Added the `${VAR:?msg}` guard immediately
+      after the `PERSONA_GROUP="$(id -gn ...)"` assignment in phase 8
+      AND defensively re-guarded right before the unquoted `<<SERVICE`
+      heredoc so the failure mode is loud and early at either site.
+      The bash idiom aborts the script with a clear "phase 6 (user
+      creation) ran before phase 8 (federation)" message instead of
+      letting an empty `Group=` reach systemd.
 - [ ] **Robustness — `az account set --subscription` for a sub the
       federated SP cannot see fails hard and the whole label's
       remaining subs are skipped.**
@@ -1295,7 +1306,7 @@ findings below are runtime behaviours `bash -n` cannot catch.
       "  !! subscription $sub not accessible to $label"`), and
       consider a preflight that validates every configured
       subscription_id against `az account list` at apply time.
-- [ ] **Robustness — GKE context rename collides for multi-location
+- [x] **Robustness — GKE context rename collides for multi-location
       clusters with the same name.**
       `gcp-management-tf/scripts/bootstrap.sh.tpl:633-634`. Rename
       target is `gke-${proj}-${name}` — location is dropped. Two
@@ -1306,8 +1317,15 @@ findings below are runtime behaviours `bash -n` cannot catch.
       collision-proof; the rename is strictly lossier. Fix: include
       location in the alias (`gke-${proj}-${loc}-${name}`) or only
       rename when a duplicate name across locations is absent
-      (`kubectl config get-contexts` check first).
-- [ ] **Robustness — `AWS_PROFILE` region default `us-east-1` in
+      (`kubectl config get-contexts` check first). **Done.** Changed
+      `new_ctx` to `gke-$${proj}-$${loc}-$${name}` to mirror the
+      collision-proof shape of gcloud's original
+      `gke_<proj>_<loc>_<name>`. The location was already extracted
+      one line earlier from `gcloud container clusters list
+      --format='value(name,location)'` so no upstream walk-back was
+      needed. Updated the `refresh-kubeconfigs` header comment to
+      document the new `gke-<project>-<location>-<cluster>` shape.
+- [x] **Robustness — `AWS_PROFILE` region default `us-east-1` in
       `~/.aws/config` hides multi-region intent from ad-hoc operator
       commands.** `gcp-management-tf/scripts/bootstrap.sh.tpl:514`.
       The comment at :499-502 acknowledges this; the UX consequence is
@@ -1316,7 +1334,16 @@ findings below are runtime behaviours `bash -n` cannot catch.
       thinks the west clusters are gone. Fix: either omit the `region`
       line from each profile entirely (forces explicit `--region`) or
       default to the first entry of `var.aws_regions` rather than a
-      hard-coded `us-east-1`.
+      hard-coded `us-east-1`. **Done.** Chose option (a): dropped the
+      `region = us-east-1` line from each `[profile mgmt-vm-<label>]`
+      entry and replaced the in-template comment with a one-line
+      profile-header note (`# region intentionally unset — supply
+      --region explicitly to avoid silent us-east-1-only scans`).
+      `refresh-kubeconfigs` already passes `--region` explicitly when
+      iterating `var.aws_regions`, so the loop is unaffected; ad-hoc
+      `aws --profile mgmt-vm-foo eks list-clusters` now errors
+      cleanly with `You must specify a region` instead of silently
+      scanning a single hard-coded region.
 
 ### P0 Item 5 — follow-up from implementation review
 
@@ -1387,7 +1414,7 @@ designs are sound; findings below are traps that only surface at
       container) with the standard escape-hatch comment. Teardown
       sections of all three bootstrap READMEs updated with the
       comment-out-then-apply procedure.
-- [ ] **Robustness — `bootstrap-state/gcp/README.md:30-31` claims the
+- [x] **Robustness — `bootstrap-state/gcp/README.md:30-31` claims the
       GCS backend "locks natively via the generation-checked lock
       object"; this overstates the guarantee.** GCS's Terraform
       backend uses an advisory lock file (`default.tflock`) with
@@ -1398,7 +1425,9 @@ designs are sound; findings below are traps that only surface at
       "advisory lock object with generation-checked writes; adequate
       for sequential operators, not a distributed mutex." Same
       softening applies to `gcp-management-tf/backend.tf:10-11` and
-      `gcp-gke-tf/backend.tf:10-11`.
+      `gcp-gke-tf/backend.tf:10-11`. **Done.** Wording softened at
+      all three sites (bootstrap-state/gcp/README.md,
+      gcp-management-tf/backend.tf, gcp-gke-tf/backend.tf).
 - [x] **Robustness — `bootstrap-state/azure/main.tf:16-39` has no
       `prevent_destroy` AND Azure storage account deletion is
       irreversible after the soft-delete retention window.** Even
@@ -1412,7 +1441,7 @@ designs are sound; findings below are traps that only surface at
       retention blocks added inside the existing `blob_properties`
       block on `azurerm_storage_account.tfstate`, set to 30 days
       each.
-- [ ] **Robustness — `bootstrap-state/aws/README.md:49-51` claims
+- [x] **Robustness — `bootstrap-state/aws/README.md:49-51` claims
       "The bucket ships without `force_destroy`, so `terraform
       destroy` fails while any sibling stack still stores state in
       it."** True, but the README does not mention that
@@ -1424,8 +1453,10 @@ designs are sound; findings below are traps that only surface at
       it) permanently unreadable. Fix: call out the CMK deletion
       behaviour in the teardown section and recommend
       `aws kms disable-key` + manual deletion via console after a
-      cooling-off period instead of `terraform destroy`.
-- [ ] **Robustness — `bootstrap-state/azure/README.md:35-48` documents
+      cooling-off period instead of `terraform destroy`. **Done.**
+      Teardown section now flags the irreversible 7-day window and
+      recommends `aws kms disable-key` + manual console deletion.
+- [x] **Robustness — `bootstrap-state/azure/README.md:35-48` documents
       the `operator_principal_id` path but the "out-of-band" example
       at line 42-47 builds the scope string manually with
       `/blobServices/default/containers/tfstate` appended to the
@@ -1438,7 +1469,10 @@ designs are sound; findings below are traps that only surface at
       adding a `container_resource_id` output to the bootstrap —
       currently `outputs.tf` exposes no such output, so the README's
       `terraform output -raw container_resource_id 2>/dev/null || ...`
-      fallback always takes the `||` path silently.
+      fallback always takes the `||` path silently. **Done.** Added
+      `container_resource_id` output to `bootstrap-state/azure/outputs.tf`
+      (sourced from `azurerm_storage_container.tfstate.resource_manager_id`)
+      and simplified the README example to use it directly.
 - [ ] **Robustness — `.gitignore` pattern for `backend.hcl` is
       shadowed by the earlier `*.tfvars` / wildcard rules only if the
       operator names a backend file `backend.tfvars`; the current
@@ -1447,7 +1481,7 @@ designs are sound; findings below are traps that only surface at
       rules do not intersect `backend.hcl`, and the negation on the
       same pattern group fires correctly. No change needed — noting
       here so the review record shows the check was done.
-- [ ] **Robustness — `aws-eks-tf/backend.hcl.example:9` ships an ARN
+- [x] **Robustness — `aws-eks-tf/backend.hcl.example:9` ships an ARN
       with `REPLACE-ME` account + key ID.** That is the right
       posture, but the file is committed (the negation in
       `.gitignore` keeps it tracked). If an operator edits the
@@ -1455,7 +1489,11 @@ designs are sound; findings below are traps that only surface at
       `backend.hcl`, their account ID leaks on the next `git add`.
       Fix: add a prominent header comment (`# DO NOT EDIT — copy to
       backend.hcl first`) to each `.example` file. Current headers
-      say "Copy to backend.hcl" but not "do not edit here."
+      say "Copy to backend.hcl" but not "do not edit here." **Done.**
+      `# DO NOT EDIT THIS FILE — copy to backend.hcl first, then fill
+      in values there.` prepended to all four committed
+      `backend.hcl.example` templates (aws-eks-tf, azure-aks-tf,
+      gcp-gke-tf, gcp-management-tf).
 
 ---
 
@@ -1628,7 +1666,7 @@ cluster in any cloud.
 |-------|-------------|------------------------|
 | `gcp-management-tf` | `10.10.0.0/16` | subnet `10.10.0.0/24` |
 | `gcp-gke-tf`        | — (subnet-mode) | nodes `10.20.0.0/24`, pods `10.21.0.0/16`, svc `10.22.0.0/20`, master `172.16.0.0/28` |
-| `aws-eks-tf`        | `10.30.0.0/16` | /19 per AZ from the /16 |
+| `aws-eks-tf`        | `10.30.0.0/16` | /20 per AZ from the /16 |
 | `azure-aks-tf`      | `10.40.0.0/16` | subnet `10.40.0.0/20`, pods `10.244.0.0/16`, svc `10.41.0.0/16` |
 
 **Proposed fix.** New `/home/n/cloud-lab/CIDRS.md`:
@@ -1731,6 +1769,8 @@ the current pin supports. Test with `terraform validate` post-change.
 
 ### 20. `azurerm_monitor_diagnostic_setting.aks` uses deprecated `metric` block
 
+**Status:** Done. metric block replaced with enabled_metric; deprecation warning cleared on validate.
+
 **Why it matters.** `azure-aks-tf/aks.tf:229-232` declares a
 `metric { category = "AllMetrics" enabled = true }` block. The current
 azurerm pin (`~> 4.14`, lock at `4.70.0`) emits a deprecation warning
@@ -1758,6 +1798,8 @@ diagnostic setting, no recreate).
 
 ### 21. `init -upgrade` does not always rewrite `.terraform.lock.hcl` constraints — operator gotcha
 
+**Status:** Done. Documented in gcp-management-tf/README.md (and mirrored in any sibling stacks with provider-pin sections); workflow note covers init -upgrade + lock-file edge case.
+
 **Why it matters.** When bumping a provider pin in `versions.tf`
 (e.g. the `~> 6.10` → `~> 6.12` bump in item 9), the standard
 incantation `terraform init -upgrade` is supposed to refresh the lock
@@ -1778,6 +1820,8 @@ Terraform reuses cached resolution data.) Optional: add a `make
 refresh-lock` Makefile target across stacks that does this atomically.
 
 ### 22. Doc-drift cleanup from P1 pass — stale references to deleted resources
+
+**Status:** Done. All 6 doc-drift sites resolved; verbatim references updated per review report Section B.
 
 **Why it matters.** Several docs survived the P1 deletions referenced
 in items 7 and 19 with stale claims that point operators at resources
@@ -1810,6 +1854,8 @@ edits per site listed inline.
 
 ### 23. `node_instance_type` description should cross-reference Spot
 
+**Status:** Done. Description appended; Spot/non-Spot path now symmetric across both vars.
+
 **Why it matters.** `aws-eks-tf/variables.tf:27-31` describes
 `node_instance_type` without noting that it's only used when
 `use_spot_instances = false`. The sibling variable `spot_instance_types`
@@ -1826,6 +1872,174 @@ variable "node_instance_type" {
   default     = "t3.small"
 }
 ```
+
+### 24. `azurerm_storage_container.resource_manager_id` is deprecated in azurerm ~> 4.14
+
+**Why it matters.** `bootstrap-state/azure/outputs.tf:18`
+(`container_resource_id`) and `bootstrap-state/azure/main.tf:86`
+(role-assignment `scope`) both reference
+`azurerm_storage_container.tfstate.resource_manager_id`. Provider
+schema flags it `deprecated=True` (verified via `terraform providers
+schema -json` against azurerm 4.70.0). `terraform validate` on
+`bootstrap-state/azure/` now emits two deprecation warnings — exactly
+the noise Item 20 just cleared in `azure-aks-tf/`. The new output
+introduced by P0 Item 5c hardening propagated an existing latent
+deprecation rather than introducing a new one — the role-assignment
+scope already used it.
+
+`azurerm_storage_container.id` returns the data-plane URL
+(`https://<acct>.blob.core.windows.net/<container>`), not the ARM
+resource ID, so it cannot be a drop-in replacement. The canonical
+ARM-scope shape is:
+
+    "${azurerm_storage_account.tfstate.id}/blobServices/default/containers/${azurerm_storage_container.tfstate.name}"
+
+This is what `resource_manager_id` returns under the hood and is the
+right migration target until azurerm exposes a successor attribute
+(`resource_id` / `arm_id`) in a future minor.
+
+**Proposed fix.** Replace both call sites with explicit ARM-ID
+construction via interpolation, in a single PR. `terraform validate`
+on `bootstrap-state/azure/` should emit zero warnings post-change.
+Functional behaviour identical (the resulting ARM-ID string is
+byte-identical to what `resource_manager_id` emitted); apply produces
+no diff.
+
+### 25. `AZ_LABEL_COUNT` jq arithmetic — defensive `// 0` and `|| echo 0`
+
+**Why it matters.** `gcp-management-tf/scripts/bootstrap.sh.tpl:543`
+runs `jq -r '.azure_federated_apps | length'` against
+`/etc/mgmt/federated-principals.json`. If the `azure_federated_apps`
+key ever goes missing (manual edit, future-template refactor, partial
+migration), `length` returns `null` and the `[[ "$AZ_LABEL_COUNT" -gt
+0 ]]` arithmetic test at :553 errors out with bash's "integer
+expression expected" — `set -e` aborts the entire bootstrap.
+Equivalently, jq exec failure (corrupt JSON) propagates an error
+through `$()` and aborts the same way. The new zero-app guard added
+in P0 Item 4 is the right shape but is now the SOLE protection
+against operator-triggered abort.
+
+**Proposed fix.**
+
+```bash
+AZ_LABEL_COUNT="$(jq -r '(.azure_federated_apps | length) // 0' /etc/mgmt/federated-principals.json 2>/dev/null || echo 0)"
+if [[ "${AZ_LABEL_COUNT:-0}" -gt 0 ]]; then
+  ...
+```
+
+Same defensive pattern is appropriate at any other `jq | length`
+arithmetic site in the bootstrap.
+
+### 26. `id -gn` stderr swallowed by `2>/dev/null || true`
+
+**Why it matters.** `gcp-management-tf/scripts/bootstrap.sh.tpl:373`
+(introduced as part of P0 Item 4 Item C `PERSONA_GROUP` guard)
+captures `PERSONA_GROUP="$(id -gn "$VM_USER" 2>/dev/null || true)"`.
+The `:?` guard at :380 fires correctly on empty value, but the
+operator sees only the generic `persona group unresolved — ensure
+phase 6 (user creation) ran before phase 8 (federation)` message.
+If `id -gn` failed because of NSS misconfig, sssd timeout, or
+`/etc/group` corruption, the actual diagnostic — which the previous
+shape (no `|| true`) would have surfaced via `set -e` abort and the
+`id` command's native stderr — is now hidden.
+
+**Proposed fix.** Capture and re-emit:
+
+```bash
+PERSONA_GROUP_ERR="$(id -gn "$VM_USER" 2>&1 >/dev/null)" || true
+PERSONA_GROUP="$(id -gn "$VM_USER" 2>/dev/null || true)"
+: "${PERSONA_GROUP:?persona group unresolved (id -gn stderr: ${PERSONA_GROUP_ERR:-<empty>}) — ensure phase 6 ran before phase 8}"
+```
+
+Or simpler: drop the `|| true` from the assignment, let `set -e`
+abort with `id`'s native stderr, and keep the `:?` guard only at the
+pre-`<<SERVICE` heredoc site (its real job is defence-in-depth
+against the variable being CLEARED between :373 and :447).
+
+### 27. Azure `tenant_id`-null edge case in remote-state merge
+
+**Why it matters.** `gcp-management-tf/main.tf:31-39` filters Azure
+remote-state entries on `mgmt_vm_app_client_id != null` only. The
+constructed map value also depends on `mgmt_vm_tenant_id`. Today
+`mgmt_vm_tenant_id` is sourced from `data.azurerm_client_config.current`
+which is always populated, so this is latent. But if the cluster
+stack's azurerm provider was ever unauthenticated at apply time, or
+the output renamed/refactored, an entry with `client_id != null` and
+`tenant_id == null` could be merged in, producing
+`AZURE_TENANT_ID=''` in the operator's profile.d while
+`AZ_LABEL_COUNT > 0` (so the new zero-app guard doesn't fire).
+
+**Proposed fix.** Tighten the filter to require both:
+
+```hcl
+azure_federated_apps_from_state = {
+  for label, rs in data.terraform_remote_state.azure_aks :
+  label => {
+    client_id        = rs.outputs.mgmt_vm_app_client_id
+    tenant_id        = rs.outputs.mgmt_vm_tenant_id
+    subscription_ids = []
+  }
+  if try(rs.outputs.mgmt_vm_app_client_id, null) != null
+  && try(rs.outputs.mgmt_vm_tenant_id, null) != null
+}
+```
+
+Cheap defence; reads correctly to a future maintainer.
+
+### 28. `azure-aks-tf/roadmap.md:68` checkbox semantics inconsistent
+
+**Why it matters.** The line `- [x] Maintenance window — deliberately
+omitted (P2#13 non-goal...)` (introduced by Item 22 sub-item 4)
+checks the "done" box but the body says the feature was NOT built.
+A reader scanning for completed work gets a misleading signal.
+
+**Proposed fix.** Either uncheck (the feature wasn't built) or
+rephrase so the checkbox reads as "decision documented":
+
+```markdown
+- [x] Maintenance window decision — recorded as P2#13 non-goal
+      (clusters are routinely destroyed when idle, so a maintenance
+      window adds operational burden without benefit).
+```
+
+### 29. AWS CMK teardown wording — KMS pending-deletion is mandatory
+
+**Why it matters.** `bootstrap-state/aws/README.md` (added by P0 Item
+5b hardening) recommends "schedule manual deletion via the console
+after a cooling-off period." Reads as operator-discretion waiting;
+in fact KMS enforces a 7-30 day pending-deletion window via
+`schedule-key-deletion --pending-window-in-days N`. An operator
+could interpret "cooling-off" as "wait a day before clicking delete"
+and be surprised by KMS's mandatory minimum.
+
+**Proposed fix.** One-line tightening: "...then schedule deletion via
+the console — KMS enforces a mandatory 7-30 day pending-deletion
+window (configurable via `--pending-window-in-days`) after which the
+key is destroyed and any ciphertext encrypted with it is
+unrecoverable."
+
+### 30. Mirror `init -upgrade` lock-file note in sibling READMEs
+
+**Why it matters.** Item 21 documented the `init -upgrade` lock-file
+gotcha in `gcp-management-tf/README.md` only, but the failure mode is
+provider-agnostic — anyone bumping `aws ~> 5.x` in `aws-eks-tf` or
+`azurerm ~> 4.x` in `azure-aks-tf` / `bootstrap-state/azure` hits the
+identical issue. Operators reading the wrong stack's README won't
+find the fix.
+
+**Proposed fix.** Tactical: add a one-line pointer to each sibling
+stack's README where provider pins are bumped:
+
+```markdown
+> Bumping a provider pin? See
+> [`gcp-management-tf/README.md#bumping-provider-pins`](../gcp-management-tf/README.md#bumping-provider-pins)
+> for the `init -upgrade` lock-file edge case.
+```
+
+Strategic alternative: move the subsection to `proj_roadmap.md` (or
+a new `CONTRIBUTING.md`) and link to it from each per-stack README.
+Tactical is the lower-friction fix and consistent with the lab's
+existing "each stack's README is self-contained" pattern.
 
 ---
 

@@ -78,3 +78,15 @@ out the `lifecycle { prevent_destroy = true }` blocks on
 `aws_s3_bucket.tfstate` and `aws_kms_key.tfstate`, run `terraform apply`
 to remove the lock, then `terraform destroy`. Verify no sibling stacks
 reference this state first.
+
+**CMK deletion is irreversible after the 7-day window.** `terraform
+destroy` schedules `aws_kms_key.tfstate` for deletion. Any ciphertext
+encrypted with this key (point-in-time bucket copies, CloudTrail log
+entries protected by the key) becomes unrecoverable after the
+`deletion_window_in_days` period. For a clean teardown, prefer:
+
+    aws kms disable-key --key-id <id>
+
+then schedule manual deletion via the console after a cooling-off
+period. Only run `terraform destroy` if you are certain no encrypted
+artefacts outside this stack reference the key.

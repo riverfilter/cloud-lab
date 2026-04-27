@@ -43,8 +43,7 @@ Two ways to grant it:
    az role assignment create \
      --assignee $(az ad signed-in-user show --query id -o tsv) \
      --role "Storage Blob Data Contributor" \
-     --scope $(terraform output -raw container_resource_id 2>/dev/null \
-               || az storage account show -n <name> -g <rg> --query id -o tsv)/blobServices/default/containers/tfstate
+     --scope $(terraform output -raw container_resource_id)
    ```
 
 ## Locking

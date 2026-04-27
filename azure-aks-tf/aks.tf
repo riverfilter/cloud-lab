@@ -68,7 +68,7 @@ resource "azurerm_kubernetes_cluster" "this" {
   # IP model and sidesteps the classic Azure CNI problem where every pod
   # consumes a VNet IP.
   #
-  # Cilium (network_dataplane = "cilium", network_policy = "cilium") is the
+  # Cilium (network_data_plane = "cilium", network_policy = "cilium") is the
   # eBPF dataplane. It is free on AKS, enforces Kubernetes NetworkPolicy,
   # and is the AKS equivalent of GKE Dataplane V2. Mandatory for a lab with
   # deliberately vulnerable workloads — cheap defense-in-depth via
@@ -226,9 +226,8 @@ resource "azurerm_monitor_diagnostic_setting" "aks" {
     category = "kube-controller-manager"
   }
 
-  metric {
+  enabled_metric {
     category = "AllMetrics"
-    enabled  = true
   }
 }
 

@@ -114,7 +114,7 @@ This module does **not** install any specific agent — you bring your own via H
 - 1 agent pod per node (DaemonSet) consuming ~500m CPU / 512 Mi–1 GiB memory
 - 1 cluster-level helper pod (StatefulSet) — enable `enable_ebs_csi_driver` so its PVC provisions
 
-`t3.small` (2 vCPU burstable, 2 GiB RAM) leaves enough headroom for an agent of that size plus a handful of lightweight lab pods. If you see OOMKilled agent pods or `MemoryPressure` on nodes, bump `node_instance_type` to `t3.medium` (4 GiB).
+`t3.small` (2 vCPU burstable, 2 GiB RAM) leaves enough headroom for an agent of that size plus a handful of lightweight lab pods. If you see OOMKilled agent pods or `MemoryPressure` on nodes: when `use_spot_instances = false`, bump `node_instance_type` to `t3.medium` (4 GiB). When Spot is on (default), replace `spot_instance_types` with a 4 GiB list, e.g. `["t3.medium", "t3a.medium", "t2.medium"]`.
 
 ## Warning — vulnerable workloads
 
@@ -130,7 +130,6 @@ This module does **not** install any specific agent — you bring your own via H
 > It does **not** restrict egress from pods to the internet by default (NAT is open). Before running DVWA or similar, add:
 >
 > - A default-deny `NetworkPolicy` per namespace, explicitly allowlisting what the vulnerable pod actually needs.
-> - Optionally, tighten the `${cluster_name}-nodes-sg` security group for east-west traffic.
 > - Consider VPC endpoints for ECR/S3/STS so you can remove NAT entirely for a fully air-gapped test.
 >
 > The AWS VPC CNI also imposes one thing worth knowing for a security lab: **pods share the node's ENI IP pool and the node's security groups by default**. Pod-level SG isolation is available via `ENABLE_POD_ENI=true` + SecurityGroupPolicy CRs but is not enabled by default here; rely on NetworkPolicy for pod-to-pod controls.
