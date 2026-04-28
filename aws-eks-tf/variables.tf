@@ -5,7 +5,7 @@ variable "region" {
 }
 
 variable "cluster_name" {
-  description = "EKS cluster name. Also used as a prefix for related resources (VPC, IAM roles, KMS alias, log group)."
+  description = "EKS cluster name. Also used as a prefix for related resources (VPC, IAM roles, KMS alias, log group). Must be globally unique within the AWS account because IAM role names (e.g. <cluster_name>-mgmt-vm, <cluster_name>-cluster, <cluster_name>-node) are account-scoped — two EKS stacks sharing this value in the same account collide on the IAM role on the second apply."
   type        = string
   default     = "sec-lab"
 
@@ -63,6 +63,13 @@ variable "spot_instance_types" {
   }
 }
 
+# Variable name is intentionally `authorized_cidrs` across all three sibling
+# stacks (gcp-gke-tf, aws-eks-tf, azure-aks-tf) — the gcp-management-tf
+# `nat_public_ip` output description tells operators to append `<NAT_IP>/32`
+# to "each cluster stack's authorized_cidrs" by that exact name. Do NOT
+# rename to mirror the cloud-native field (e.g. azurerm's
+# `api_server_authorized_ip_ranges`); the cross-stack instruction in
+# gcp-management-tf/outputs.tf would silently drift.
 variable "authorized_cidrs" {
   description = "CIDRs allowed to reach the public EKS control plane endpoint. MUST be locked down (typically your workstation /32)."
   type        = list(string)
@@ -90,11 +97,35 @@ variable "cluster_admin_principal_arns" {
   }
 
   validation {
+    # Partition prefix accepts `aws` (commercial) plus `aws-<segment>(-<segment>)*`
+    # for non-commercial partitions: `aws-cn`, `aws-us-gov`, `aws-iso`, `aws-iso-b`.
+    # The earlier `aws[a-z-]*` form accepted typos like `aws-:` and `aws---cn:`
+    # because `[a-z-]*` permits empty / leading / consecutive dashes. This form
+    # requires each dash-separated segment to be at least one lowercase letter.
     condition = alltrue([
       for arn in var.cluster_admin_principal_arns :
-      can(regex("^arn:aws:iam::[0-9]{12}:(user|role)/", arn))
+      can(regex("^arn:(aws|aws-[a-z]+(-[a-z]+)*):iam::[0-9]{12}:(user|role)/", arn))
     ])
-    error_message = "Every entry must be an IAM user or role ARN (arn:aws:iam::<account>:user/... or arn:aws:iam::<account>:role/...)."
+    error_message = "Every entry must be an IAM user or role ARN (arn:aws:iam::<account>:user/... or arn:aws:iam::<account>:role/...). Non-commercial partitions (aws-cn, aws-us-gov, aws-iso, aws-iso-b) are accepted."
+  }
+
+  validation {
+    # toset() in eks.tf would silently dedupe accidental cut-and-paste
+    # duplicates. Surface the typo at plan time instead.
+    condition     = length(var.cluster_admin_principal_arns) == length(toset(var.cluster_admin_principal_arns))
+    error_message = "Duplicate ARN detected. Each principal must appear at most once."
+  }
+}
+
+variable "gcp_oidc_thumbprint" {
+  description = "Optional override for the SHA-1 thumbprint of Google's OIDC chain root (used on `aws_iam_openid_connect_provider.gcp`). When empty (default) the stack performs an outbound TLS handshake to https://accounts.google.com at every plan via `data.tls_certificate.gcp_oidc` and uses the chain-root cert. Set this to a known-good 40-char hex thumbprint to pin the value for air-gapped CI runners (where the dynamic lookup fails plan, not apply). AWS no longer uses this thumbprint for IAM-trusted-root issuers like Google, but the field must still be syntactically valid."
+  type        = string
+  default     = ""
+
+  validation {
+    # Empty (use data source) or 40-char hex SHA-1 fingerprint.
+    condition     = var.gcp_oidc_thumbprint == "" || can(regex("^[0-9a-fA-F]{40}$", var.gcp_oidc_thumbprint))
+    error_message = "gcp_oidc_thumbprint must be empty or a 40-character hex SHA-1 fingerprint."
   }
 }
 

@@ -73,6 +73,18 @@ resource "azuread_application" "mgmt_vm" {
   count = var.mgmt_vm_gcp_sa_unique_id == "" ? 0 : 1
 
   display_name = "${var.cluster_name}-mgmt-vm"
+
+  # Destroy-then-recreate of this App (e.g. on a cluster_name rename) would
+  # otherwise leave a window where the federated credential and role
+  # assignment are both gone, locking the mgmt VM out of AKS for the
+  # duration of the apply. CBD propagated through the SP, federated
+  # credential, and role assignment so the rotation chain has no
+  # auth-window: dependents reference ForceNew attributes of the App, so
+  # without CBD on each link Terraform would tear down the dependents
+  # before creating the new App and reopen the gap.
+  lifecycle {
+    create_before_destroy = true
+  }
 }
 
 resource "azuread_service_principal" "mgmt_vm" {
@@ -80,6 +92,10 @@ resource "azuread_service_principal" "mgmt_vm" {
 
   # azuread 3.x: `client_id` replaces the older `application_id` argument.
   client_id = azuread_application.mgmt_vm[0].client_id
+
+  lifecycle {
+    create_before_destroy = true
+  }
 }
 
 # Federated credential that trusts Google's OIDC issuer. Both subject AND
@@ -96,6 +112,10 @@ resource "azuread_application_federated_identity_credential" "mgmt_vm" {
   audiences      = ["api://AzureADTokenExchange"]
   issuer         = "https://accounts.google.com"
   subject        = var.mgmt_vm_gcp_sa_unique_id
+
+  lifecycle {
+    create_before_destroy = true
+  }
 }
 
 # Azure RBAC for Kubernetes: cluster-admin on THIS cluster only. Matches the
@@ -108,4 +128,8 @@ resource "azurerm_role_assignment" "mgmt_vm_aks_admin" {
   scope                = azurerm_kubernetes_cluster.this.id
   role_definition_name = "Azure Kubernetes Service RBAC Cluster Admin"
   principal_id         = azuread_service_principal.mgmt_vm[0].object_id
+
+  lifecycle {
+    create_before_destroy = true
+  }
 }

@@ -131,8 +131,13 @@ resource "aws_iam_role_policy_attachment" "ebs_csi" {
 # requires a thumbprint on the OIDC provider resource even though it no
 # longer uses it to validate tokens for IAM's trusted root CAs — we supply
 # the current cert SHA-1 so the field is never stale.
+#
+# The data source is additionally count-gated on var.gcp_oidc_thumbprint
+# being empty: when an operator pins the thumbprint via that variable
+# (e.g. for an air-gapped CI runner that cannot reach accounts.google.com
+# at plan time) we skip the outbound TLS handshake entirely.
 data "tls_certificate" "gcp_oidc" {
-  count = var.mgmt_vm_gcp_sa_unique_id == "" ? 0 : 1
+  count = var.mgmt_vm_gcp_sa_unique_id == "" || var.gcp_oidc_thumbprint != "" ? 0 : 1
 
   url = "https://accounts.google.com"
 }
@@ -144,8 +149,12 @@ resource "aws_iam_openid_connect_provider" "gcp" {
 
   url            = "https://accounts.google.com"
   client_id_list = ["sts.amazonaws.com"]
-  # Index the chain root (last cert), not the leaf — AWS expects the top-most CA thumbprint.
-  thumbprint_list = [data.tls_certificate.gcp_oidc[0].certificates[length(data.tls_certificate.gcp_oidc[0].certificates) - 1].sha1_fingerprint]
+  # Operator-pinned thumbprint takes precedence (avoids plan-time TLS handshake
+  # to accounts.google.com); otherwise index the chain root (last cert) of the
+  # dynamically-fetched chain — AWS expects the top-most CA thumbprint.
+  thumbprint_list = [
+    var.gcp_oidc_thumbprint != "" ? var.gcp_oidc_thumbprint : data.tls_certificate.gcp_oidc[0].certificates[length(data.tls_certificate.gcp_oidc[0].certificates) - 1].sha1_fingerprint
+  ]
 }
 
 # Role the GCP SA can assume. Trust policy pins both the subject (GCP SA

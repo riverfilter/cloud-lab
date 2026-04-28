@@ -15,6 +15,9 @@ Minimal, cost-optimized AKS cluster for a security research lab on Azure. Design
 - Public API server endpoint **restricted** to `authorized_cidrs`
 - Optional Spot user node pool (off by default — see cost notes)
 - Optional Log Analytics diagnostic settings (off by default)
+- (Optional) AAD App + Service Principal + federated credential trusting
+  the GCP mgmt VM SA when `mgmt_vm_gcp_sa_unique_id` is set, with
+  `Azure Kubernetes Service RBAC Cluster Admin` scoped to this cluster only
 
 ## Prerequisites
 
@@ -51,6 +54,19 @@ terraform apply tfplan
 ```
 
 State is local by default. For shared use, create a Storage Account + container out of band and uncomment the backend block in `backend.tf`.
+
+> Bumping a provider pin? See
+> [`gcp-management-tf/README.md#bumping-provider-pins`](../gcp-management-tf/README.md#bumping-provider-pins)
+> for the `init -upgrade` lock-file edge case.
+
+## Cross-stack
+
+When `mgmt_vm_gcp_sa_unique_id` is set, this stack emits
+`mgmt_vm_app_client_id` and `mgmt_vm_tenant_id` outputs that the
+`gcp-management-tf` stack consumes (directly via tfvars or via
+`terraform_remote_state`) to wire the mgmt VM's federated kubeconfig.
+See [`gcp-management-tf/README.md`](../gcp-management-tf/README.md#cross-stack-apply-order)
+for the apply-order narrative — don't duplicate it here.
 
 ## Access the cluster
 

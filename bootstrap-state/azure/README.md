@@ -46,6 +46,10 @@ Two ways to grant it:
      --scope $(terraform output -raw container_resource_id)
    ```
 
+> Bumping a provider pin? See
+> [`gcp-management-tf/README.md#bumping-provider-pins`](../../gcp-management-tf/README.md#bumping-provider-pins)
+> for the `init -upgrade` lock-file edge case.
+
 ## Locking
 
 The azurerm backend uses native blob-lease locking — no sidecar needed.
@@ -70,3 +74,9 @@ comment out the `lifecycle { prevent_destroy = true }` blocks on
 `azurerm_storage_account.tfstate` and `azurerm_storage_container.tfstate`,
 run `terraform apply` to remove the locks, then `terraform destroy`.
 Verify no sibling stacks reference this state first.
+
+Both blob versioning and 30-day soft-delete retention are enabled on
+the storage account, so an accidental `terraform destroy` of a sibling
+stack can be recovered for 30 days. After that window closes the blobs
+are gone permanently — Azure does not honour a tenant-level recovery
+process for soft-deleted blob data.

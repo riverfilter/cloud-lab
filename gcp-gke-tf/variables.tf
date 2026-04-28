@@ -54,6 +54,16 @@ variable "use_spot_vms" {
   default     = true
 }
 
+# Variable name is intentionally `authorized_cidrs` across all three sibling
+# stacks (gcp-gke-tf, aws-eks-tf, azure-aks-tf) — the gcp-management-tf
+# `nat_public_ip` output description tells operators to append `<NAT_IP>/32`
+# to "each cluster stack's authorized_cidrs" by that exact name. NOTE: the
+# GKE stack uses an object-shaped element (cidr_block + display_name) where
+# the EKS/AKS siblings take a flat list of strings — that shape difference
+# is GKE-API-driven (master_authorized_networks_config requires
+# display_name), but the variable name itself stays canonical so
+# gcp-management-tf/outputs.tf's instruction line refers to one name across
+# the cluster stacks.
 variable "authorized_cidrs" {
   description = "CIDRs allowed to reach the public GKE control plane endpoint. MUST be locked down (typically your workstation /32)."
   type = list(object({

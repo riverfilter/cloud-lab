@@ -38,11 +38,39 @@ resource "google_compute_subnetwork" "this" {
 # lock the mgmt VM out of every cluster.
 ############################################
 
+# Load-bearing static IP for every cluster's authorized_cidrs allowlist
+# (gcp-gke-tf, aws-eks-tf, azure-aks-tf all consume nat_public_ip from
+# this stack's root output). Destroying it silently breaks every cluster's
+# allowlist on the next apply: the NAT will rebuild against a fresh
+# AUTO-allocated address, the mgmt VM's egress IP changes, and every
+# cluster's authorized_cidrs entry now points at a stale address with no
+# error surface. Hence prevent_destroy below.
+#
+# Reserved static external IPs bill at ~$0.005/hr while detached (i.e.
+# not attached to a NAT/forwarding rule/VM). Partial-apply failures or a
+# `terraform state rm` on the NAT can leave this address orphaned and
+# quietly accruing charges; clean up promptly when triaging a failed apply.
+#
+# Escape hatch: to actually delete this address (cluster name change,
+# region migration, stack teardown), comment out the `lifecycle` block
+# below and run `terraform destroy` directly. The prevent_destroy guard
+# is read from configuration at plan time (not from state), so no
+# separate intermediate `terraform apply` is required.
+#
+# Operating-principle note: this stack is routinely destroyed when idle
+# (operating principle #2), so the two-step teardown (comment out the
+# lifecycle, then `terraform destroy`) is the new normal — not a one-off
+# migration. The trade is IP stability across applies vs. one extra edit
+# per teardown; treat the edit as a standard step in the teardown ritual.
 resource "google_compute_address" "nat" {
   project      = var.project_id
   name         = "${var.name_prefix}-nat-ip"
   region       = var.region
   address_type = "EXTERNAL"
+
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 resource "google_compute_router" "nat" {

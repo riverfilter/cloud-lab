@@ -18,12 +18,27 @@ blast radius. Bring up only what you need; tear it down when you're done.
 | [`azure-aks-tf/`](./azure-aks-tf) | Minimal AKS cluster (2x Standard_B2s on-demand nodes by default) intended to host security agents alongside deliberately vulnerable workloads. Private nodes behind NAT Gateway, CIDR-restricted public API server, Azure CNI Overlay + Cilium dataplane, AAD-only auth with Azure RBAC for Kubernetes. |
 
 Recommended order: apply `gcp-management-tf` first, SSH into the
-management VM, then drive `gcp-gke-tf` from there so state and
-credentials stay contained to the management server. 
+management VM, then drive `gcp-gke-tf`, `aws-eks-tf`, and `azure-aks-tf`
+from there. The mgmt VM federates into AWS IAM roles and Azure AAD apps
+via Workload Identity Federation, so a single SSH session can `kubectl`
+into clusters in all three clouds with no long-lived keys or secrets on
+disk. State and credentials stay contained to the management server. 
+
+## Multi-cloud kubectl
+
+After applying `gcp-management-tf` plus any cluster stacks, SSH into the
+mgmt VM and run `refresh-kubeconfigs` to merge GKE, EKS, and AKS contexts
+into a single `~/.kube/config`. `refresh-kubeconfigs --preflight` first
+reports the VM's egress IP, TCP-reachability of each configured cluster
+endpoint, and validates Azure subscription IDs against `az account list`
+so typos and missing `authorized_cidrs` entries surface before the main
+refresh runs. A systemd timer rewrites the federated ID-token files
+every 50 minutes so kubectl sessions outlive any one refresh.
 
 ## Prerequisites
 
-- Terraform >= 1.5
+- Terraform >= 1.5 (`aws-eks-tf` and `bootstrap-state/aws` require >= 1.10
+  for the S3-native `use_lockfile` backend feature)
 - gcloud SDK authenticated against the target org / project
 - A GCP project with billing enabled (one per stack is fine; they can
   share a project too)
@@ -55,7 +70,9 @@ Each bootstrap stack is self-bootstrapping (local state) and emits a
 - **`terraform.tfvars` is gitignored.** Copy the `.example` file in each
   stack and fill in project IDs, CIDRs, etc.
 - **No long-lived keys on disk.** The management VM uses its attached
-  service account plus impersonation; workstations use ADC.
+  GCP service account plus impersonation, and federates into AWS IAM
+  roles and Azure AAD apps via Workload Identity Federation — no static
+  AWS access keys, no Azure SP secrets. Workstations use ADC.
 - **`.terraform/` is gitignored.** Provider binaries are large; let
   `terraform init` fetch them locally.
 

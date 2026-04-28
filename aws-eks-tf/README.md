@@ -17,7 +17,8 @@ Minimal, cost-optimized, **private** EKS cluster for a security research lab on 
 
 ## Prerequisites
 
-- `terraform` >= 1.5
+- `terraform` >= 1.10 (required for the S3 backend's `use_lockfile = true`,
+  which replaces the historical DynamoDB lock table)
 - `aws` CLI v2 authenticated against an account with billing enabled:
   ```
   aws configure sso            # or: aws configure
@@ -49,9 +50,13 @@ cluster_admin_principal_arns = [
 ]
 ```
 
-The second ARN is deterministic: `arn:aws:iam::<account>:role/<cluster_name>-mgmt-vm`. You can also read it from the `mgmt_vm_role_arn` output after the role exists, then add it to the list on a follow-up apply. The `mgmt_vm_role_arn` output is only populated when `mgmt_vm_gcp_sa_unique_id` is set (the federated-identity resources are count-gated on that variable).
+**Pre-compute the mgmt VM ARN before the first apply (recommended).** The role ARN is deterministic — `arn:aws:iam::<account>:role/<cluster_name>-mgmt-vm` — so you can construct it from `aws sts get-caller-identity --query Account --output text` and `var.cluster_name` and drop it into `terraform.tfvars` before running `terraform apply` for the first time. This gives the mgmt VM working `kubectl` from the moment the cluster exists.
+
+> **Footnote — the two-apply path (avoid).** It is technically valid to (1) apply once with only the operator ARN in the list, (2) read the `mgmt_vm_role_arn` output after apply, (3) add it to `cluster_admin_principal_arns` and apply again. Don't do this if you can avoid it: between applies the mgmt VM has valid AWS federated creds and `eks:DescribeCluster` (so `aws eks update-kubeconfig` succeeds and looks healthy), but **`kubectl` returns `forbidden` on every call** until the second apply lands. If you forget the second apply, the entire cross-cloud federated-identity feature ships functionally broken on EKS with no error surface. The `mgmt_vm_role_arn` output is only populated when `mgmt_vm_gcp_sa_unique_id` is set (the federated-identity resources are count-gated on that variable).
 
 ## Upgrading from a singular `cluster_admin_principal_arn`
+
+> As of 2026-04-27, the list-driven `aws_eks_access_entry.admin` / `aws_eks_access_policy_association.admin` `for_each` pair (keyed on ARN) is the only active code path in this stack. The legacy singular `cluster_admin_principal_arn` variable and the parallel `aws_eks_access_entry.mgmt_vm` resource pair are both gone from source. Operators starting fresh from `master` do not need any migration — populate `cluster_admin_principal_arns` with the operator and mgmt VM ARNs and apply normally. The state-move recipes below are retained only for operators upgrading from a state file produced by an earlier revision.
 
 An earlier revision of this stack used a singular string variable `cluster_admin_principal_arn` and a singular `aws_eks_access_entry.admin` / `aws_eks_access_policy_association.admin` pair. Item 1 of the roadmap also introduced a separate `aws_eks_access_entry.mgmt_vm` / `aws_eks_access_policy_association.mgmt_vm` pair for the federated mgmt VM role. Both have been consolidated into a single list-driven `for_each` resource pair keyed on the ARN. If you have a pre-existing deployment, avoid destroy-and-recreate by moving state before the next apply:
 
@@ -75,6 +80,23 @@ terraform state mv \
 
 Substitute your real account ID, IAM principal, and `<cluster_name>-mgmt-vm` role name. `terraform plan` after the moves should report no changes on the admin/mgmt_vm access-entry resources. A static `moved { }` block is not written in HCL because the new address keys are ARNs that are only known at apply time (not expressable in source). If you skip the state moves the resources are simply replaced on next apply, which has brief cluster-admin unavailability but no other blast radius in a lab.
 
+> **Alternative pattern — per-operator literal `moved` block.** If you prefer HCL-driven migrations over `terraform state mv`, you can drop a local-only `migrations.tf` next to the rest of the stack containing literal `moved` blocks with your real ARNs hardcoded. `moved` blocks require *constant* keys (variable-referenced indexes are rejected), which is why a generic source-committed version is impossible — but a per-operator file with your account ID and IAM user baked in works fine. Example:
+>
+> ```hcl
+> # migrations.tf — local-only, NOT committed
+> moved {
+>   from = aws_eks_access_entry.admin[0]
+>   to   = aws_eks_access_entry.admin["arn:aws:iam::123456789012:user/you"]
+> }
+> moved {
+>   from = aws_eks_access_policy_association.admin[0]
+>   to   = aws_eks_access_policy_association.admin["arn:aws:iam::123456789012:user/you"]
+> }
+> # ...add the mgmt_vm pair if you applied Item 1.
+> ```
+>
+> Run `terraform apply` once with the file in place; the plan output is cleaner than `state mv` (the moves render as `# ... has moved to ...` lines instead of out-of-band state surgery). Delete `migrations.tf` after the apply succeeds — `moved` blocks are inert once their `to` address matches state, so leaving the file in place is harmless but clutters subsequent plans. Both patterns are equivalent in outcome; pick whichever your team prefers.
+
 ## Access the cluster
 
 ```
@@ -83,6 +105,10 @@ kubectl get nodes
 ```
 
 Because the cluster has a public control plane endpoint with `public_access_cidrs`, `kubectl` works from any source IP listed in `authorized_cidrs`. The nodes themselves have no public IPs and live in private subnets.
+
+> Bumping a provider pin? See
+> [`gcp-management-tf/README.md#bumping-provider-pins`](../gcp-management-tf/README.md#bumping-provider-pins)
+> for the `init -upgrade` lock-file edge case.
 
 ## Tear down
 

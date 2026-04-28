@@ -83,7 +83,11 @@ resource "azurerm_storage_container" "tfstate" {
 resource "azurerm_role_assignment" "operator_blob_contributor" {
   count = var.operator_principal_id == "" ? 0 : 1
 
-  scope                = azurerm_storage_container.tfstate.resource_manager_id
+  # Explicit ARM-ID interpolation. azurerm_storage_container.resource_manager_id
+  # is deprecated in azurerm ~> 4.14; the data-plane .id attribute returns the
+  # blob URL, not the ARM resource ID. See outputs.tf:container_resource_id for
+  # the matching migration.
+  scope                = "${azurerm_storage_account.tfstate.id}/blobServices/default/containers/${azurerm_storage_container.tfstate.name}"
   role_definition_name = "Storage Blob Data Contributor"
   principal_id         = var.operator_principal_id
 }

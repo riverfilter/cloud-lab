@@ -15,7 +15,12 @@ output "container_name" {
 
 output "container_resource_id" {
   description = "Resource Manager ID of the tfstate container — use as the scope when granting an external principal access out-of-band."
-  value       = azurerm_storage_container.tfstate.resource_manager_id
+  # Explicit ARM-ID interpolation. azurerm_storage_container.resource_manager_id
+  # is deprecated in azurerm ~> 4.14; the data-plane .id attribute returns the
+  # blob URL, not the ARM resource ID, so it cannot be a drop-in replacement.
+  # The interpolation below is byte-identical to what resource_manager_id
+  # emitted under the hood.
+  value = "${azurerm_storage_account.tfstate.id}/blobServices/default/containers/${azurerm_storage_container.tfstate.name}"
 }
 
 output "backend_snippet" {

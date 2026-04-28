@@ -370,13 +370,29 @@ chmod 0644 /etc/mgmt/federated-principals.json
 # Persona group — used for owning the token files so the VM user can
 # read them but no-one else can. `useradd -m` in phase 6 created the
 # user's primary group matching the username.
-PERSONA_GROUP="$(id -gn "$VM_USER" 2>/dev/null || true)"
-# Fail loud + early if the group is unresolved (NSS timing, user
-# creation hiccup, bootstrap re-ordering). Several systemd unit
-# heredocs below interpolate $${PERSONA_GROUP} at bootstrap time —
-# an empty value would yield `Group=` and a cryptic systemd parse
-# error at `systemctl start` time. The bash `$${VAR:?msg}` idiom
-# aborts the script with a clear message instead.
+#
+# No `2>/dev/null || true` here: under `set -e`, an `id -gn` failure
+# (NSS misconfig, sssd timeout, /etc/group corruption, phase 6 not
+# run) aborts the script and surfaces `id`'s native stderr to the
+# serial console / cloud-init log. Hiding the stderr behind a
+# generic ":?persona group unresolved" message left the operator
+# without the actual diagnostic.
+PERSONA_GROUP="$(id -gn "$VM_USER")"
+# Whitespace-only guard: `id -gn` exiting 0 with a blank/whitespace
+# payload (malformed NSS entry, exotic getent quirk) would slip past
+# both `set -e` and the `:?` check below (which fires only on
+# unset/empty). Catch it explicitly here so the diagnostic names the
+# real failure mode rather than the downstream symptom.
+[[ -n "$${PERSONA_GROUP//[[:space:]]/}" ]] || {
+  echo "phase 8: id -gn returned whitespace-only result for $VM_USER" >&2
+  exit 1
+}
+# Defence-in-depth: the heredoc-emitted systemd units below interpolate
+# $${PERSONA_GROUP} at bootstrap time. An empty value would yield `Group=`
+# and a cryptic systemd parse error at `systemctl start` time. The bash
+# `$${VAR:?msg}` idiom aborts here instead. With the assignment above no
+# longer suppressing failures, this is now strictly a re-guard against
+# the variable being CLEARED between assignment and use.
 : "$${PERSONA_GROUP:?persona group unresolved — ensure phase 6 (user creation) ran before phase 8 (federation)}"
 
 # --- id-token writer ---
@@ -540,7 +556,13 @@ chmod 0600 "$AWS_CFG"
 # have to override $AZURE_TENANT_ID / $AZURE_CLIENT_ID before `kubectl`
 # or use `az login --identity` with a different federated credential.
 AZURE_PROFILE_D=/etc/profile.d/mgmt-azure-federated.sh
-AZ_LABEL_COUNT="$(jq -r '.azure_federated_apps | length' /etc/mgmt/federated-principals.json)"
+# Defensive: `// 0` makes `length` return 0 if `.azure_federated_apps`
+# is missing/null (jq emits null otherwise, which trips bash arithmetic);
+# `2>/dev/null || echo 0` covers jq exec failure / corrupt JSON; and
+# `$${VAR:-0}` in the test below covers the variable being unset. Three
+# overlapping guards keep `set -e` from aborting bootstrap on operator
+# edits to /etc/mgmt/federated-principals.json.
+AZ_LABEL_COUNT="$(jq -r '(.azure_federated_apps | length) // 0' /etc/mgmt/federated-principals.json 2>/dev/null || echo 0)"
 
 # Only emit the profile.d exports if we actually have an Azure
 # federated app to point at. With zero apps configured, jq's
@@ -550,7 +572,7 @@ AZ_LABEL_COUNT="$(jq -r '.azure_federated_apps | length' /etc/mgmt/federated-pri
 # adds an AKS context by hand. Skipping the file entirely keeps the
 # operator's shell free of stale empty exports; kubelogin then
 # surfaces its own diagnostic.
-if [[ "$AZ_LABEL_COUNT" -gt 0 ]]; then
+if [[ "$${AZ_LABEL_COUNT:-0}" -gt 0 ]]; then
   AZ_FIRST_LABEL="$(jq -r '.azure_federated_apps | to_entries | (.[0].key // "")' /etc/mgmt/federated-principals.json)"
   AZ_FIRST_CLIENT_ID="$(jq -r '.azure_federated_apps | to_entries | (.[0].value.client_id // "")' /etc/mgmt/federated-principals.json)"
   AZ_FIRST_TENANT_ID="$(jq -r '.azure_federated_apps | to_entries | (.[0].value.tenant_id // "")' /etc/mgmt/federated-principals.json)"
@@ -650,6 +672,13 @@ preflight_main() {
   # so the final line can call out whichever cluster the operator most
   # likely needs to update.
   local cidr_summary=""
+  # sub_warnings counts Azure subscription_ids that are configured for a
+  # federated label but not visible to the SP at preflight time (Item 32 /
+  # P0#4.7 apply-time half). These are warnings, not hard failures: the
+  # runtime path emits its own `!!` diagnostic when it tries to use the
+  # sub. Surfacing them in preflight lets operators catch typos and
+  # missing role assignments before they hit `refresh-kubeconfigs`.
+  local sub_warnings=0
 
   # --- GKE ---
   if [[ -f "$CONFIG" ]] && command -v gcloud >/dev/null; then
@@ -690,8 +719,11 @@ preflight_main() {
   # --- AWS / EKS ---
   if [[ -f "$CONFIG" ]] && command -v aws >/dev/null; then
     local aws_count
-    aws_count="$(jq -r '.aws_role_arns | length' "$CONFIG")"
-    if [[ "$aws_count" -gt 0 ]]; then
+    # Defensive jq: `// 0` covers missing key, `|| echo 0` covers jq exec
+    # failure / corrupt JSON, `$${VAR:-0}` covers unset. See the
+    # AZ_LABEL_COUNT site for the rationale.
+    aws_count="$(jq -r '(.aws_role_arns | length) // 0' "$CONFIG" 2>/dev/null || echo 0)"
+    if [[ "$${aws_count:-0}" -gt 0 ]]; then
       local regions
       mapfile -t regions < <(jq -r '.aws_regions[]?' "$CONFIG")
       if [[ $${#regions[@]} -eq 0 ]]; then
@@ -750,8 +782,9 @@ preflight_main() {
   [[ -r /etc/profile.d/mgmt-azure-federated.sh ]] && . /etc/profile.d/mgmt-azure-federated.sh
   if [[ -f "$CONFIG" ]] && command -v az >/dev/null; then
     local az_count
-    az_count="$(jq -r '.azure_federated_apps | length' "$CONFIG")"
-    if [[ "$az_count" -gt 0 ]]; then
+    # Defensive jq: see AZ_LABEL_COUNT site for the rationale.
+    az_count="$(jq -r '(.azure_federated_apps | length) // 0' "$CONFIG" 2>/dev/null || echo 0)"
+    if [[ "$${az_count:-0}" -gt 0 ]]; then
       local AZ_TOKEN_FILE="/var/run/mgmt/gcp-id-token-azure"
       local label client_id tenant_id sub name fqdn cidrs
       while IFS=$'\t' read -r label client_id tenant_id; do
@@ -768,10 +801,62 @@ preflight_main() {
           echo "[preflight] AKS: az login failed for $${label} — skipping"
           continue
         fi
+        # Apply-time preflight for Item 32 / P0#4.7. If the operator has
+        # pinned `subscription_ids` for this label, diff the configured
+        # set against what the SP can actually see (`az account list`).
+        # Each configured-but-invisible sub gets one `??` warning so
+        # operators catch typos / missing role assignments BEFORE the
+        # runtime path hits its `!! subscription not accessible` diag.
+        # We intentionally do this here (after the existing az login,
+        # before the existing `subs` mapfile that drives the TCP probe
+        # loop) so a single `az login` covers both this validation and
+        # the cluster enumeration that follows. If `subscription_ids` is
+        # empty the runtime path falls back to `az account list`, so any
+        # visible sub is fine — nothing to preflight in that case.
+        local configured_subs accessible_subs sub
+        mapfile -t configured_subs < <(jq -r --arg l "$label" '.azure_federated_apps[$l].subscription_ids[]?' "$CONFIG")
+        if [[ $${#configured_subs[@]} -gt 0 ]]; then
+          # `|| true` so an `az account list` failure (network blip,
+          # transient AAD outage) emits an empty accessible set rather
+          # than aborting the whole preflight. In that case every
+          # configured sub will be flagged as missing — noisy but
+          # honest, and the operator has the egress-IP context above
+          # to disambiguate connectivity vs. assignment issues.
+          mapfile -t accessible_subs < <(az account list --output tsv --query '[].id' 2>/dev/null || true)
+          # B2: distinguish upstream auth/AAD failure (empty accessible set)
+          # from per-sub assignment/typo errors. Without this single line,
+          # an AAD outage or expired federated token between `az login` and
+          # `az account list` would emit one "check assignment/typo" warning
+          # per configured sub — misleading operator triage. Emitting one
+          # upstream-issue marker BEFORE the per-sub diff loop tells the
+          # operator to look at auth before chasing per-sub typos. The
+          # per-sub warnings still fire (the subs really aren't visible),
+          # and `sub_warnings` still increments, so the summary count is
+          # unchanged.
+          if [[ $${#accessible_subs[@]} -eq 0 ]]; then
+            echo "  ?? az account list returned empty for label $label — possible AAD outage or transient auth (configured subs flagged below may be false positives)"
+          fi
+          for sub in "$${configured_subs[@]}"; do
+            [[ -z "$sub" ]] && continue
+            local found=0 acc
+            for acc in "$${accessible_subs[@]}"; do
+              if [[ "$acc" == "$sub" ]]; then found=1; break; fi
+            done
+            if [[ "$found" -eq 0 ]]; then
+              echo "  ?? subscription $sub configured for label $label but not visible to the SP — check assignment/typo"
+              sub_warnings=$((sub_warnings + 1))
+            fi
+          done
+        fi
+        # B1: reuse `configured_subs` (already populated above) instead of
+        # re-querying jq for the same path. If the operator did not pin
+        # `subscription_ids` for this label, fall back to `az account list`
+        # — same semantic as before, just one mapfile instead of two.
         local subs
-        mapfile -t subs < <(jq -r --arg l "$label" '.azure_federated_apps[$l].subscription_ids[]?' "$CONFIG")
-        if [[ $${#subs[@]} -eq 0 ]]; then
+        if [[ $${#configured_subs[@]} -eq 0 ]]; then
           mapfile -t subs < <(az account list --query '[].id' -o tsv 2>/dev/null || true)
+        else
+          subs=("$${configured_subs[@]}")
         fi
         for sub in "$${subs[@]}"; do
           [[ -z "$sub" ]] && continue
@@ -815,6 +900,13 @@ preflight_main() {
     cidr_msg="missing from authorized_cidrs of:$${cidr_summary}"
   fi
   echo "[preflight] $${reachable} reachable / $${unreachable} unreachable. Egress IP $${egress_ip} $${cidr_msg}."
+  # Item 32 / P0#4.7: surface configured-but-invisible Azure subs as a
+  # distinct summary line so operators don't have to grep for `??` in a
+  # long preflight log. Stays silent at zero to avoid summary noise on
+  # the common all-clean path.
+  if [[ "$sub_warnings" -gt 0 ]]; then
+    echo "[preflight] $${sub_warnings} azure subscription_ids configured but not visible to their SP (see ?? lines above)."
+  fi
 }
 
 # preflight_ip_in_cidrs IP CIDR_LIST
@@ -841,10 +933,31 @@ case "$${1:-}" in
   --preflight) preflight_main; exit 0 ;;
 esac
 
+# Pin KUBECONFIG to the persona user's home regardless of how this
+# script was invoked. From a non-login `sudo` shell or the systemd
+# timer, `$HOME` resolves to root's home, so `az aks get-credentials`
+# / `kubelogin convert-kubeconfig` / `gcloud container clusters
+# get-credentials` would write to /root/.kube/config and a subsequent
+# interactive run as the persona user would not see those contexts.
+# The persona username is hard-coded by terraform at render time so
+# the script needs no shell-side knowledge of the operator identity.
+# PERSONA_GROUP is resolved at runtime (matches the phase-8 idiom).
+VM_USER="${vm_username}"
+PERSONA_GROUP="$(id -gn "$VM_USER")" || {
+  echo "[refresh-kubeconfigs] id -gn failed for $VM_USER — NSS issue or stale render of vm_username" >&2
+  exit 1
+}
+[[ -n "$${PERSONA_GROUP//[[:space:]]/}" ]] || {
+  echo "[refresh-kubeconfigs] id -gn returned whitespace-only result for $VM_USER" >&2
+  exit 1
+}
+KUBECONFIG="/home/$VM_USER/.kube/config"
+export KUBECONFIG
+
 export USE_GKE_GCLOUD_AUTH_PLUGIN=True
-mkdir -p "$HOME/.kube"
-touch "$HOME/.kube/config"
-chmod 600 "$HOME/.kube/config"
+mkdir -p "/home/$VM_USER/.kube"
+touch "$KUBECONFIG"
+chmod 600 "$KUBECONFIG"
 
 # -------- GCP (GKE) --------
 echo "[refresh-kubeconfigs] GCP: listing projects..."
@@ -894,14 +1007,27 @@ for proj in "$${PROJECTS[@]}"; do
   done
 done
 
+# Re-assert ownership after this cloud's writes. Required when invoked
+# from a non-login sudo / cron / systemd path where gcloud may have
+# created config files as the calling uid.
+#
+# Only chown when running as root (e.g. via sudo); a same-uid invocation
+# already owns the files it just wrote, and chown to "self:self" can EPERM
+# under set -e if any pre-existing component (e.g. .kube/cache from a
+# prior sudo run) is owned by a different uid.
+if [[ $EUID -eq 0 ]]; then
+  chown -R "$VM_USER:$PERSONA_GROUP" "/home/$VM_USER/.kube"
+fi
+
 # -------- AWS (EKS) --------
 # Discovery only — credentials are provided by the ~/.aws/config profile
 # (web_identity_token_file) populated during bootstrap, refreshed by the
 # mgmt-gcp-id-token.timer systemd unit. We do NOT assume-role inline
 # here; env-var credentials would vanish the moment this script exits.
 if [[ -f "$CONFIG" ]] && command -v aws >/dev/null; then
-  AWS_LABELS_COUNT="$(jq -r '.aws_role_arns | length' "$CONFIG")"
-  if [[ "$AWS_LABELS_COUNT" -gt 0 ]]; then
+  # Defensive jq: see AZ_LABEL_COUNT site for the rationale.
+  AWS_LABELS_COUNT="$(jq -r '(.aws_role_arns | length) // 0' "$CONFIG" 2>/dev/null || echo 0)"
+  if [[ "$${AWS_LABELS_COUNT:-0}" -gt 0 ]]; then
     mapfile -t AWS_REGIONS < <(jq -r '.aws_regions[]?' "$CONFIG")
     if [[ $${#AWS_REGIONS[@]} -eq 0 ]]; then
       echo "[refresh-kubeconfigs] AWS: aws_regions is empty in $CONFIG — skipping"
@@ -937,6 +1063,11 @@ else
   ! command -v aws >/dev/null && echo "[refresh-kubeconfigs] AWS: aws CLI missing — skipping"
 fi
 
+# Re-assert ownership after this cloud's writes (see GCP block above).
+if [[ $EUID -eq 0 ]]; then
+  chown -R "$VM_USER:$PERSONA_GROUP" "/home/$VM_USER/.kube"
+fi
+
 # -------- Azure (AKS) --------
 # Same story as AWS: discovery only. kubelogin is wired in
 # workload-identity mode via /etc/profile.d/mgmt-azure-federated.sh so
@@ -952,9 +1083,21 @@ fi
 [[ -r /etc/profile.d/mgmt-azure-federated.sh ]] && . /etc/profile.d/mgmt-azure-federated.sh
 
 if [[ -f "$CONFIG" ]] && command -v az >/dev/null && command -v kubelogin >/dev/null; then
-  AZ_LABELS_COUNT="$(jq -r '.azure_federated_apps | length' "$CONFIG")"
-  if [[ "$AZ_LABELS_COUNT" -gt 0 ]]; then
+  # Defensive jq: see AZ_LABEL_COUNT site for the rationale.
+  AZ_LABELS_COUNT="$(jq -r '(.azure_federated_apps | length) // 0' "$CONFIG" 2>/dev/null || echo 0)"
+  if [[ "$${AZ_LABELS_COUNT:-0}" -gt 0 ]]; then
     AZ_TOKEN_FILE="/var/run/mgmt/gcp-id-token-azure"
+    # Collect AKS context names as they are merged so we can scope the
+    # kubelogin conversion at the end of the block (one --context per
+    # entry). Without this scoping, `kubelogin convert-kubeconfig -l
+    # workloadidentity` would walk every context in ~/.kube/config and
+    # rewrite any whose exec block names `kubelogin get-token`. That's
+    # safe today (GKE uses gke-gcloud-auth-plugin, EKS uses aws eks
+    # get-token), but a future plugin rev or an imported AAD-enabled
+    # non-AKS context would silently get clobbered. Per-context scoping
+    # is defence-in-depth that matches the "block is tolerant of the
+    # others" stance of the rest of refresh-kubeconfigs.
+    AZURE_CTXS=()
     while IFS=$'\t' read -r label client_id tenant_id; do
       [[ -z "$label" ]] && continue
       echo "[refresh-kubeconfigs] Azure: label=$label tenant=$tenant_id"
@@ -993,34 +1136,52 @@ if [[ -f "$CONFIG" ]] && command -v az >/dev/null && command -v kubelogin >/dev/
 
       for sub in "$${SUBS[@]}"; do
         [[ -z "$sub" ]] && continue
+        # Distinguish "subscription not accessible to this label" (typo
+        # in subscription_ids, missing role assignment, sub deleted)
+        # from "no AKS clusters in this sub" further down. Both still
+        # `continue` to the next sub — the distinction is purely for
+        # operator triage when the kubeconfig comes back missing a
+        # cluster they expected to see.
         az account set --subscription "$sub" 2>/dev/null || {
-          echo "  !! az account set failed for sub=$sub"; continue;
+          echo "  !! subscription $sub not accessible to $label (typo or missing role assignment) — skipping"
+          continue
         }
         mapfile -t AKS_ROWS < <(az aks list --query '[].{n:name,g:resourceGroup}' -o tsv 2>/dev/null || true)
         for row in "$${AKS_ROWS[@]}"; do
           [[ -z "$row" ]] && continue
           name="$(awk '{print $1}' <<<"$row")"
           rg="$(awk '{print $2}' <<<"$row")"
+          ctx="azure-$${label}-$${name}"
           echo "  -> $name ($rg in sub $sub)"
-          az aks get-credentials \
-            --name "$name" \
-            --resource-group "$rg" \
-            --subscription "$sub" \
-            --context "azure-$${label}-$${name}" \
-            --overwrite-existing >/dev/null || {
-              echo "    !! get-credentials failed for $name"
-              continue
-            }
+          if az aks get-credentials \
+                --name "$name" \
+                --resource-group "$rg" \
+                --subscription "$sub" \
+                --context "$ctx" \
+                --overwrite-existing >/dev/null; then
+            AZURE_CTXS+=("$ctx")
+          else
+            echo "    !! get-credentials failed for $name"
+            continue
+          fi
         done
       done
     done < <(jq -r '.azure_federated_apps | to_entries[] | "\(.key)\t\(.value.client_id)\t\(.value.tenant_id)"' "$CONFIG")
 
+    # Dedupe contexts in case duplicate (label, name) pairs exist across subs.
+    mapfile -t AZURE_CTXS < <(printf '%s\n' "$${AZURE_CTXS[@]}" | sort -u)
+
     # Convert any azurecli-mode entries to workloadidentity-mode so
     # kubelogin reads env vars instead of calling `az` at token time.
     # Safe to run repeatedly; a no-op for contexts that are already
-    # in workloadidentity mode.
-    kubelogin convert-kubeconfig -l workloadidentity >/dev/null || \
-      echo "[refresh-kubeconfigs] Azure: kubelogin convert-kubeconfig failed (non-fatal)"
+    # in workloadidentity mode. Scoped per-context (--context <ctx>) so
+    # only the AKS contexts merged in this run are touched — non-AKS
+    # contexts (GKE, EKS, anything imported by hand) are left alone.
+    for ctx in "$${AZURE_CTXS[@]}"; do
+      [[ -z "$ctx" ]] && continue
+      kubelogin convert-kubeconfig -l workloadidentity --context "$ctx" >/dev/null || \
+        echo "[refresh-kubeconfigs] Azure: kubelogin convert-kubeconfig failed for $ctx (non-fatal)"
+    done
   else
     echo "[refresh-kubeconfigs] Azure: no azure_federated_apps configured — skipping"
   fi
@@ -1028,6 +1189,11 @@ else
   [[ ! -f "$CONFIG" ]]                && echo "[refresh-kubeconfigs] Azure: $CONFIG missing — skipping"
   ! command -v az >/dev/null          && echo "[refresh-kubeconfigs] Azure: az CLI missing — skipping"
   ! command -v kubelogin >/dev/null   && echo "[refresh-kubeconfigs] Azure: kubelogin missing — skipping"
+fi
+
+# Re-assert ownership after this cloud's writes (see GCP block above).
+if [[ $EUID -eq 0 ]]; then
+  chown -R "$VM_USER:$PERSONA_GROUP" "/home/$VM_USER/.kube"
 fi
 
 echo "[refresh-kubeconfigs] done. Contexts:"

@@ -21,7 +21,7 @@ variable "resource_group_name" {
 }
 
 variable "cluster_name" {
-  description = "AKS cluster name. Also used as a prefix for related resources (VNet, subnet, NAT gateway, identity, RG)."
+  description = "AKS cluster name. Also used as a prefix for related resources (VNet, subnet, NAT gateway, identity, RG). Must be unique within the AAD tenant because the federated AAD App display_name derives from it (<cluster_name>-mgmt-vm) — AAD does not enforce uniqueness on display_name, but two clusters with the same value in the same tenant produce ambiguous CLI listings (`az ad app list --display-name ...` returns multiple objects) and operators filtering by display_name will hit the wrong App."
   type        = string
   default     = "sec-lab"
 
@@ -103,6 +103,13 @@ variable "spot_node_count" {
   }
 }
 
+# Variable name is intentionally `authorized_cidrs` across all three sibling
+# stacks (gcp-gke-tf, aws-eks-tf, azure-aks-tf) — the gcp-management-tf
+# `nat_public_ip` output description tells operators to append `<NAT_IP>/32`
+# to "each cluster stack's authorized_cidrs" by that exact name. Do NOT
+# rename to mirror the cloud-native field (azurerm's
+# `api_server_authorized_ip_ranges`); the cross-stack instruction in
+# gcp-management-tf/outputs.tf would silently drift.
 variable "authorized_cidrs" {
   description = "CIDRs allowed to reach the public AKS API server endpoint. MUST be locked down (typically your workstation /32). 0.0.0.0/0 is rejected by validation."
   type        = list(string)

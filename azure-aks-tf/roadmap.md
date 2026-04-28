@@ -65,7 +65,9 @@ Living document. Tasks will be checked off as implementation lands.
 - [x] Azure RBAC for Kubernetes + admin_group_object_ids
 - [x] local_account_disabled = true (AAD-only by default)
 - [x] Default node pool: 1x B2s, 30 GB Managed Premium, no public IPs
-- [x] Maintenance window — deliberately omitted (P2#13 non-goal; clusters are routinely destroyed when idle).
+- [x] Maintenance window decision — recorded as P2#13 non-goal
+      (clusters are routinely destroyed when idle, so a maintenance
+      window adds operational burden without benefit).
 - [x] Optional Spot user node pool (conditional, two-pool topology)
 - [x] Optional monitor_diagnostic_setting for kube-audit / kube-apiserver logs
 

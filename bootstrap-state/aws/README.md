@@ -87,6 +87,9 @@ entries protected by the key) becomes unrecoverable after the
 
     aws kms disable-key --key-id <id>
 
-then schedule manual deletion via the console after a cooling-off
-period. Only run `terraform destroy` if you are certain no encrypted
-artefacts outside this stack reference the key.
+then schedule deletion via the console — KMS enforces a mandatory
+7-30 day pending-deletion window (configurable via
+`--pending-window-in-days`) after which the key is destroyed and any
+ciphertext encrypted with it is unrecoverable. Only run `terraform
+destroy` if you are certain no encrypted artefacts outside this stack
+reference the key.

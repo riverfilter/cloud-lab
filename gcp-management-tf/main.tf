@@ -35,7 +35,12 @@ locals {
       tenant_id        = rs.outputs.mgmt_vm_tenant_id
       subscription_ids = []
     }
+    # tenant_id-null check is presently a tautology (the cluster stack
+    # sources tenant_id from data.azurerm_client_config.current which is
+    # always populated) — kept as defence-in-depth against producer-side
+    # refactors that could change the contract.
     if try(rs.outputs.mgmt_vm_app_client_id, null) != null
+    && try(rs.outputs.mgmt_vm_tenant_id, null) != null
   }
   azure_federated_apps_effective = merge(local.azure_federated_apps_from_state, var.azure_federated_apps)
 }

@@ -71,6 +71,6 @@ output "mgmt_vm_app_client_id" {
 }
 
 output "mgmt_vm_tenant_id" {
-  description = "AAD tenant_id the mgmt VM federates into. Pulled from the current azurerm client config so the operator does not have to look it up. Always populated (tenant_id is knowable regardless of whether federation is enabled)."
+  description = "Current apply principal's tenant, for reference. Pulled from data.azurerm_client_config.current and emitted unconditionally — does NOT imply that federation is enabled. When mgmt_vm_gcp_sa_unique_id is set, this is also the tenant the mgmt VM federates into (the AAD App lands in the same tenant as the apply principal)."
   value       = data.azurerm_client_config.current.tenant_id
 }

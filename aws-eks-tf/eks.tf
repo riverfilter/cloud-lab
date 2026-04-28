@@ -104,6 +104,16 @@ resource "aws_eks_access_entry" "admin" {
   cluster_name  = aws_eks_cluster.this.name
   principal_arn = each.value
   type          = "STANDARD"
+
+  # Belt-and-braces ordering. The principal_arn string already creates an
+  # implicit dependency when the operator passes mgmt_vm_role_arn directly,
+  # but a destroy cycle that recreates the role (e.g. cluster_name rename
+  # forcing a force-replace) can leave this access entry referencing an
+  # ARN that is mid-replacement. The explicit depends_on guarantees the
+  # role is fully created before the entry is, and not destroyed until
+  # after the entry is. When mgmt_vm_gcp_sa_unique_id is unset the role's
+  # count is 0 — depends_on on a count=0 resource is a no-op.
+  depends_on = [aws_iam_role.mgmt_vm_federated]
 }
 
 resource "aws_eks_access_policy_association" "admin" {

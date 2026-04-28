@@ -32,6 +32,13 @@ Operators who need to mutate something impersonate a purpose-built SA from
 inside the VM (`gcloud --impersonate-service-account=...`), which keeps audit
 trails clean and avoids long-lived keys on disk.
 
+The same SA's `unique_id` doubles as the OIDC subject for Workload
+Identity Federation into AWS (IAM role with a `google.com` OIDC
+provider) and Azure (AAD app with a federated credential). The arrows
+out to those clouds aren't drawn above, but they all originate from
+this same `mgmt-vm-sa` and short-lived ID tokens minted on the VM —
+no separate cross-cloud secrets exist.
+
 ## Prerequisites
 
 Before `terraform apply`:
@@ -144,6 +151,13 @@ new clusters come online:
 # or from your workstation:
 make refresh
 ```
+
+`refresh-kubeconfigs --preflight` is a non-mutating dry run that reports
+the VM's egress IP, TCP-reachability of each configured GKE / EKS / AKS
+endpoint, and validates configured Azure `subscription_ids` against
+`az account list`. Run it first when a refresh starts surfacing
+authentication or networking errors — it isolates whether the problem
+is `authorized_cidrs`, federation, or a typo'd subscription ID.
 
 ## Inspecting the bootstrap
 

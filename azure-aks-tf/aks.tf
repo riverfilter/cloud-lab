@@ -149,12 +149,14 @@ resource "azurerm_kubernetes_cluster" "this" {
 
     tags = var.tags
 
-    node_labels = merge(
-      var.tags,
-      {
-        "lab.purpose" = "security-research"
-      }
-    )
+    # node_labels are Kubernetes node labels (visible to the scheduler /
+    # nodeSelector / nodeAffinity). var.tags is an Azure resource-tag map
+    # and intentionally does NOT flow in here — leaking arbitrary tag
+    # semantics into scheduler-visible labels would surface as label-based
+    # scheduling decisions on operator-provided tag values.
+    node_labels = {
+      "lab.purpose" = "security-research"
+    }
   }
 
   # Azure KeyVault KMS etcd encryption intentionally skipped. Adds a Key Vault
@@ -268,13 +270,15 @@ resource "azurerm_kubernetes_cluster_node_pool" "spot" {
   node_public_ip_enabled = false
   vnet_subnet_id         = azurerm_subnet.nodes.id
 
-  node_labels = merge(
-    var.tags,
-    {
-      "lab.purpose"                           = "security-research"
-      "kubernetes.azure.com/scalesetpriority" = "spot"
-    }
-  )
+  # node_labels are Kubernetes node labels (visible to the scheduler /
+  # nodeSelector / nodeAffinity). var.tags is an Azure resource-tag map
+  # and intentionally does NOT flow in here — leaking arbitrary tag
+  # semantics into scheduler-visible labels would surface as label-based
+  # scheduling decisions on operator-provided tag values.
+  node_labels = {
+    "lab.purpose"                           = "security-research"
+    "kubernetes.azure.com/scalesetpriority" = "spot"
+  }
 
   node_taints = [
     "kubernetes.azure.com/scalesetpriority=spot:NoSchedule",
