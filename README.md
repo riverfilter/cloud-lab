@@ -26,14 +26,19 @@ disk. State and credentials stay contained to the management server.
 
 ## Multi-cloud kubectl
 
-After applying `gcp-management-tf` plus any cluster stacks, SSH into the
-mgmt VM and run `refresh-kubeconfigs` to merge GKE, EKS, and AKS contexts
-into a single `~/.kube/config`. `refresh-kubeconfigs --preflight` first
-reports the VM's egress IP, TCP-reachability of each configured cluster
-endpoint, and validates Azure subscription IDs against `az account list`
-so typos and missing `authorized_cidrs` entries surface before the main
-refresh runs. A systemd timer rewrites the federated ID-token files
-every 50 minutes so kubectl sessions outlive any one refresh.
+The operator workflow: SSH the GCP mgmt VM via IAP and `kubectl` into any
+GKE / EKS / AKS cluster the lab owns, no per-cluster kubeconfig wrangling
+and no static cloud keys on disk (AWS + Azure auth via Workload Identity
+Federation; see `proj_roadmap.md` "### P0" for the architecture).
+
+New cluster stacks are picked up automatically: `terraform apply` the
+cluster, run `make refresh-from-states` from `gcp-management-tf/`, and
+the cluster's context appears in `kubectl config get-contexts` on the
+mgmt VM within ~15 minutes. Two systemd timers on the VM
+(`mgmt-bootstrap-watch.timer`, `mgmt-refresh-kubeconfigs.timer`) drive
+the pickup. See [`gcp-management-tf/README.md`](./gcp-management-tf/README.md#picking-up-a-new-cluster)
+for the full flow; `refresh-kubeconfigs --preflight` is the diagnostic
+entry point when something doesn't show up.
 
 ## Prerequisites
 

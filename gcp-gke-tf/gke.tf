@@ -160,7 +160,14 @@ resource "google_container_node_pool" "primary" {
       disable-legacy-endpoints = "true"
     }
 
-    labels = var.labels
+    # Kubernetes node labels (scheduler-visible via nodeSelector / nodeAffinity).
+    # Kept literal so resource-tag semantics from var.labels do not leak into
+    # the scheduler. Existing clusters roll this node pool on next apply to
+    # drop tag-derived labels — drain workloads first. See proj_roadmap.md
+    # item 42 / P2#11 sub-item.
+    labels = {
+      "lab.purpose" = "security-research"
+    }
 
     tags = ["gke-node", "${var.cluster_name}-node"]
   }

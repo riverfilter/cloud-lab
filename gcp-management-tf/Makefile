@@ -4,19 +4,20 @@
 TFVARS ?= terraform.tfvars
 TF ?= terraform
 
-.PHONY: help init fmt validate plan apply destroy ssh refresh outputs
+.PHONY: help init fmt validate plan apply destroy ssh refresh refresh-from-states outputs
 
 help:
 	@echo "Targets:"
-	@echo "  init      - terraform init"
-	@echo "  fmt       - terraform fmt -recursive"
-	@echo "  validate  - terraform validate"
-	@echo "  plan      - terraform plan (-var-file=$(TFVARS))"
-	@echo "  apply     - terraform apply (-var-file=$(TFVARS))"
-	@echo "  destroy   - terraform destroy"
-	@echo "  ssh       - gcloud compute ssh via IAP to the mgmt VM"
-	@echo "  refresh   - SSH in and run refresh-kubeconfigs"
-	@echo "  outputs   - terraform output"
+	@echo "  init                 - terraform init"
+	@echo "  fmt                  - terraform fmt -recursive"
+	@echo "  validate             - terraform validate"
+	@echo "  plan                 - terraform plan (-var-file=$(TFVARS))"
+	@echo "  apply                - terraform apply (-var-file=$(TFVARS))"
+	@echo "  destroy              - terraform destroy"
+	@echo "  ssh                  - gcloud compute ssh via IAP to the mgmt VM"
+	@echo "  refresh              - SSH in and run refresh-kubeconfigs"
+	@echo "  refresh-from-states  - re-pull cluster-stack outputs and re-apply (auto-approve)"
+	@echo "  outputs              - terraform output"
 
 init:
 	$(TF) init
@@ -38,6 +39,16 @@ destroy:
 
 outputs:
 	$(TF) output
+
+# Two-pass apply that lands fresh cluster-stack outputs without a code
+# change in this stack. Pass 1 refreshes terraform_remote_state data
+# sources; pass 2 re-renders the VM startup-script with the recomputed
+# federation maps. Both passes -auto-approve (the `apply` target does
+# NOT) — only run this when the only expected delta is the metadata
+# startup-script.
+refresh-from-states:
+	$(TF) apply -var-file=$(TFVARS) -refresh-only -auto-approve
+	$(TF) apply -var-file=$(TFVARS) -auto-approve
 
 # Derive connection values from Terraform outputs.
 ssh:
