@@ -77,6 +77,16 @@ kubectl get nodes
 
 The cluster has a public API server endpoint restricted to `authorized_cidrs`, so `kubectl` works from any source IP listed there. Because `local_account_disabled = true`, the first kubectl call will trigger an AAD device-code flow — complete it with an account that is a member of one of the `admin_group_object_ids` groups.
 
+## Reaching this cluster from the mgmt VM
+
+This cluster is auto-discovered by the mgmt VM's `refresh-kubeconfigs`
+once the federated AAD app `client_id` / `tenant_id` land in
+`/etc/mgmt/federated-principals.json`. After `terraform apply` here, run
+`make refresh-from-states` from [`gcp-management-tf/`](../gcp-management-tf/README.md#picking-up-a-new-cluster);
+within ~15 min the context appears as `azure-<label>-<cluster_name>`
+(`<label>` is the key in the operator's `azure_federated_apps` map; see
+phase 9 of `bootstrap.sh.tpl`).
+
 ## Tear down
 
 ```
@@ -132,3 +142,9 @@ This module does **not** install any specific agent — you bring your own via H
 > One Azure-specific note: with **Azure CNI Overlay**, pods get IPs from `pod_cidr` and that range is NOT routable outside the VNet — pods reach external services via SNAT through the node's VNet IP, which in turn egresses through the NAT Gateway's public IP. Any upstream allowlist / firewall rule your in-cluster agent relies on should key on the NAT Gateway's static public IP (exposed as the `nat_gateway_public_ip` output), not the pod IP.
 >
 > Never place a vulnerable pod in the `default` namespace without a policy in front of it.
+
+## Runbooks
+
+### Runbook: cluster_name rotation verification
+
+Renaming `var.cluster_name` rolls the AAD App's `display_name` and forces a replace through the App -> SP -> FedCred -> role-assignment chain in `iam.tf`. Each link has `create_before_destroy = true` to avoid an auth-gap window. Before applying any rename, capture `terraform plan` and confirm the expected create-new-then-destroy-old order — see the runbook comment block in [`iam.tf`](./iam.tf) at `azuread_application.mgmt_vm` and `proj_roadmap.md` section "### 33." for the full check and the abort criterion.

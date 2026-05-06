@@ -134,15 +134,46 @@ That dependency cycle resolves with a two-pass apply:
    Either way, re-apply re-renders `/etc/mgmt/federated-principals.json`
    on the VM via cloud-init.
 
+   When the remote-state path is wired and nothing else has changed in
+   `gcp-management-tf` itself, `make refresh-from-states` is the
+   canonical second-pass driver. It runs `terraform apply -refresh-only
+   -auto-approve` (which re-reads each cluster stack's remote state into
+   the `terraform_remote_state` data sources) followed by
+   `terraform apply -auto-approve` (which lands the recomputed
+   `local.aws_role_arns_effective` / `local.azure_federated_apps_effective`
+   and re-renders the VM's `metadata.startup-script`). No code edit in
+   this stack is required — the target exists precisely so that adding
+   a new cluster never demands an mgmt-tf change.
+
 The two paths are mergeable — entries from `aws_eks_states` are
 combined with `aws_role_arns`, and explicit entries win on key
 collision. That lets you point most labels at remote state while
 overriding a single label inline.
 
+## Picking up a new cluster
+
+Under the bootstrap-watch + refresh-kubeconfigs timer pair, an operator
+adds a new EKS or AKS cluster with no SSH and no second mgmt-tf code
+change:
+
+1. Apply the new `aws-eks-tf` / `azure-aks-tf` stack as usual.
+2. From `gcp-management-tf/`, run `make refresh-from-states`.
+3. Within ≤5 min, the VM's `mgmt-bootstrap-watch.timer` notices the
+   metadata startup-script hash has changed and re-runs `bootstrap.sh`,
+   refreshing `/etc/mgmt/federated-principals.json`.
+4. Within ≤10 more min, the `mgmt-refresh-kubeconfigs.timer` runs
+   `refresh-kubeconfigs` and discovers the new cluster.
+
+Upper bound: 15 minutes from cluster `apply` to a working `kubectl
+<ctx>` on the mgmt VM. No SSH, no manual bootstrap rerun.
+
 ## Refreshing kubeconfigs
 
-First boot populates `~/.kube/config` automatically. To re-discover after
-new clusters come online:
+First boot populates `~/.kube/config` automatically. A systemd timer
+(`mgmt-refresh-kubeconfigs.timer`) re-runs `refresh-kubeconfigs` every
+10 minutes on the VM, so after `make refresh-from-states` (see above)
+the manual invocations below are usually optional. They remain useful
+on-demand — and `--preflight` requires the manual path.
 
 ```bash
 # on the VM, as the persona user:
@@ -173,6 +204,24 @@ sudo BOOTSTRAP_LOGGING= bash <(gcloud compute instances describe mgmt-vm \
   --project=<proj> --zone=<zone> \
   --format='value(metadata.items.startup-script)')
 ```
+
+### Debugging the timers
+
+Two systemd timers drive the hands-free pickup path:
+
+```bash
+systemctl status mgmt-refresh-kubeconfigs.timer    # 10-min cadence
+systemctl status mgmt-bootstrap-watch.timer        # 5-min cadence
+journalctl -u mgmt-refresh-kubeconfigs
+journalctl -u mgmt-bootstrap-watch
+```
+
+Note: `mgmt-bootstrap-watch` re-execs `bootstrap.sh` inline, and the
+bootstrap's own `tee` redirect captures stdout/stderr to
+`/var/log/mgmt-bootstrap.log`. The watch unit's journal therefore shows
+only the "[mgmt-bootstrap-watch] startup-script changed" preamble — for
+the actual re-run output, tail the bootstrap log (see above). Tracked
+as roadmap item 44.
 
 ## File layout
 

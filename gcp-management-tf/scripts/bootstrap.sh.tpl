@@ -1201,6 +1201,179 @@ kubectl config get-contexts -o name || true
 REFRESH
 chmod 0755 /usr/local/bin/refresh-kubeconfigs
 
+# --- mgmt-refresh-kubeconfigs.{service,timer} ---
+# Periodic re-run of /usr/local/bin/refresh-kubeconfigs so new GKE
+# clusters (and EKS/AKS clusters whose principals already live in
+# /etc/mgmt/federated-principals.json) are picked up without operator
+# SSH. Runs as the persona user so it writes to ~/.kube/config and not
+# /root/.kube/config; PERSONA_GROUP was resolved + re-guarded earlier in
+# phase 8 (see :380-396, :463) so we reference $${PERSONA_GROUP}
+# directly.
+cat >/etc/systemd/system/mgmt-refresh-kubeconfigs.service <<SERVICE
+[Unit]
+Description=Refresh ~/.kube/config across GKE/EKS/AKS for the mgmt persona user
+After=network-online.target mgmt-gcp-id-token.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=$${VM_USER}
+Group=$${PERSONA_GROUP}
+# HOME + KUBECONFIG reinforce the script's own KUBECONFIG pin at
+# bootstrap.sh.tpl:954 — systemd inherits an empty environment, so without
+# these explicit values gcloud/kubectl would fall back to root-owned defaults.
+Environment=HOME=/home/$${VM_USER}
+Environment=KUBECONFIG=/home/$${VM_USER}/.kube/config
+ExecStart=/usr/local/bin/refresh-kubeconfigs
+
+[Install]
+WantedBy=multi-user.target
+SERVICE
+
+cat >/etc/systemd/system/mgmt-refresh-kubeconfigs.timer <<'TIMER'
+[Unit]
+# Refresh cadence is intentionally non-aligned with the 50-min GCP
+# ID-token rotation (mgmt-gcp-id-token.timer at bootstrap.sh.tpl:493).
+# The token writer at :417 is atomic (mktemp + mv -f) and AWS STS
+# credentials minted inside refresh-kubeconfigs live for 1h
+# (duration_seconds at :543); AAD federated-token-file sessions
+# similarly outlive the source token. Rotation-edge ticks are safe.
+Description=Periodically refresh ~/.kube/config across GKE/EKS/AKS
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=10min
+Unit=mgmt-refresh-kubeconfigs.service
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+TIMER
+
+systemctl daemon-reload
+systemctl enable mgmt-refresh-kubeconfigs.timer
+systemctl start mgmt-refresh-kubeconfigs.timer
+
+# --- mgmt-bootstrap-watch script + service + timer ---
+# Watches metadata/instance/attributes/startup-script for changes (e.g.
+# after `terraform apply` of gcp-management-tf updates federated
+# principals) and re-runs bootstrap.sh in place. Bootstrap is idempotent
+# (see header comment at :3-18) and the phase-1 apt-lock guardrails at
+# :42-59 cover concurrent apt activity.
+cat >/usr/local/sbin/mgmt-bootstrap-watch <<'WATCH'
+#!/usr/bin/env bash
+# mgmt-bootstrap-watch
+#
+# Compare the live startup-script in instance metadata against a sha256
+# sentinel; if they differ, atomically replace /etc/mgmt/bootstrap.sh
+# and re-run it. Sentinel only advances on successful re-run, so a
+# failed bootstrap is retried on the next timer tick.
+set -euo pipefail
+
+SENTINEL_DIR=/var/lib/mgmt-bootstrap
+SENTINEL="$SENTINEL_DIR/startup-script.sha256"
+TARGET=/etc/mgmt/bootstrap.sh
+
+mkdir -p "$SENTINEL_DIR"
+install -d -m 0755 /etc/mgmt
+
+tmp_script="$(mktemp /tmp/mgmt-bootstrap-watch.XXXXXX)"
+trap 'rm -f "$tmp_script"' EXIT
+
+http_code="$(curl -sS -o "$tmp_script" -w '%%{http_code}' \
+  -H 'Metadata-Flavor: Google' \
+  'http://metadata.google.internal/computeMetadata/v1/instance/attributes/startup-script' \
+  || echo "curl-failed")"
+
+if [[ "$http_code" != "200" ]]; then
+  echo "[mgmt-bootstrap-watch] metadata fetch failed (HTTP $http_code) — skipping tick" >&2
+  exit 0
+fi
+
+new_sha="$(sha256sum "$tmp_script" | awk '{print $1}')"
+old_sha=""
+if [[ -f "$SENTINEL" ]]; then
+  old_sha="$(awk '{print $1}' "$SENTINEL" 2>/dev/null || echo "")"
+fi
+
+if [[ "$new_sha" == "$old_sha" ]]; then
+  exit 0
+fi
+
+echo "[mgmt-bootstrap-watch] startup-script changed (sha256 $${old_sha:-<none>} -> $new_sha); re-running bootstrap.sh"
+
+# Atomic install of the new script.
+target_tmp="$(mktemp "$TARGET.XXXXXX")"
+cp "$tmp_script" "$target_tmp"
+chmod 0755 "$target_tmp"
+mv -f "$target_tmp" "$TARGET"
+
+# Run; only advance sentinel on success.
+if bash "$TARGET"; then
+  printf '%s\n' "$new_sha" > "$SENTINEL.tmp"
+  mv -f "$SENTINEL.tmp" "$SENTINEL"
+else
+  rc=$?
+  echo "[mgmt-bootstrap-watch] bootstrap.sh re-run failed (rc=$rc); sentinel not advanced — will retry next tick" >&2
+  exit "$rc"
+fi
+WATCH
+chmod 0755 /usr/local/sbin/mgmt-bootstrap-watch
+
+cat >/etc/systemd/system/mgmt-bootstrap-watch.service <<'SERVICE'
+[Unit]
+Description=Re-run /etc/mgmt/bootstrap.sh when instance startup-script changes
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/local/sbin/mgmt-bootstrap-watch
+
+[Install]
+WantedBy=multi-user.target
+SERVICE
+
+cat >/etc/systemd/system/mgmt-bootstrap-watch.timer <<'TIMER'
+[Unit]
+Description=Periodically check for an updated instance startup-script
+
+[Timer]
+# Staggered from mgmt-refresh-kubeconfigs.timer (OnBootSec=2min) so the
+# two oneshots don't pile up on the same boot tick.
+OnBootSec=3min
+OnUnitActiveSec=5min
+Unit=mgmt-bootstrap-watch.service
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+TIMER
+
+systemctl daemon-reload
+systemctl enable mgmt-bootstrap-watch.timer
+systemctl start mgmt-bootstrap-watch.timer
+
+# Pre-seed the watch sentinel with the sha256 of the CURRENT
+# startup-script so the watch timer's first tick on a freshly-applied VM
+# is a no-op. Without this the 5-min tick would re-run bootstrap.sh once
+# (idempotent, but wasteful and noisy in journald). On metadata-fetch
+# failure we deliberately do NOT seed: the watch script will then
+# perform a real compare on its first tick and self-heal.
+seed_tmp="$(mktemp /tmp/mgmt-bootstrap-seed.XXXXXX)"
+seed_http="$(curl -sS -o "$seed_tmp" -w '%%{http_code}' \
+  -H 'Metadata-Flavor: Google' \
+  'http://metadata.google.internal/computeMetadata/v1/instance/attributes/startup-script' \
+  || echo "curl-failed")"
+if [[ "$seed_http" == "200" ]]; then
+  sha256sum "$seed_tmp" | awk '{print $1}' > "$STATE_DIR/startup-script.sha256.tmp"
+  mv -f "$STATE_DIR/startup-script.sha256.tmp" "$STATE_DIR/startup-script.sha256"
+else
+  log "phase 9: could not pre-seed startup-script sha256 (HTTP $seed_http) — first watch tick will re-run bootstrap"
+fi
+rm -f "$seed_tmp"
+
 # Prime kubeconfig for the persona user on first boot.
 # Uses the VM's attached SA via ADC — no keys needed.
 if [[ ! -f "$STATE_DIR/kubeconfig-primed" ]]; then

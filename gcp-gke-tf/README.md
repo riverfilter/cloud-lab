@@ -59,6 +59,17 @@ kubectl get nodes
 
 Because the cluster has a public control plane endpoint with authorized networks, `kubectl` works from any source IP listed in `authorized_cidrs`. The nodes themselves have no public IPs.
 
+## Reaching this cluster from the mgmt VM
+
+GKE discovery on the mgmt VM is zero-config — the VM SA's org-level
+`roles/container.clusterViewer` covers it without any
+`/etc/mgmt/federated-principals.json` entry. The `mgmt-refresh-kubeconfigs.timer`
+runs every 10 min, so after `terraform apply` here the context appears
+on its own as `gke-<project>-<location>-<cluster_name>` (see phase 9 of
+`bootstrap.sh.tpl`). `make refresh-from-states` from
+[`gcp-management-tf/`](../gcp-management-tf/README.md#picking-up-a-new-cluster)
+is only needed for EKS / AKS pickup, not for GKE.
+
 ## Granting the mgmt VM in-cluster admin
 
 The mgmt VM (from `gcp-management-tf`) runs with a GCP service account that already holds `roles/container.clusterViewer` org-wide (see `gcp-management-tf/modules/iam/main.tf`). That IAM role plus the mgmt VM's egress IP being in `authorized_cidrs` is enough to *authenticate* against the cluster's public endpoint, but `clusterViewer` only grants the IAM-side discovery needed to call `gcloud container clusters get-credentials`. It does NOT grant any in-cluster RBAC — every `kubectl get pods` call from the mgmt VM will return `forbidden` until a Kubernetes `ClusterRoleBinding` authorizes the SA subject.

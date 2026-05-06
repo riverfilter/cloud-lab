@@ -106,6 +106,16 @@ kubectl get nodes
 
 Because the cluster has a public control plane endpoint with `public_access_cidrs`, `kubectl` works from any source IP listed in `authorized_cidrs`. The nodes themselves have no public IPs and live in private subnets.
 
+## Reaching this cluster from the mgmt VM
+
+This cluster is auto-discovered by the mgmt VM's `refresh-kubeconfigs`
+once the federated mgmt-VM role ARN lands in
+`/etc/mgmt/federated-principals.json`. After `terraform apply` here, run
+`make refresh-from-states` from [`gcp-management-tf/`](../gcp-management-tf/README.md#picking-up-a-new-cluster);
+within ~15 min the context appears as `aws-<label>-<cluster_name>`
+(`<label>` is the key in the operator's `aws_role_arns` map; see phase
+9 of `bootstrap.sh.tpl`).
+
 > Bumping a provider pin? See
 > [`gcp-management-tf/README.md#bumping-provider-pins`](../gcp-management-tf/README.md#bumping-provider-pins)
 > for the `init -upgrade` lock-file edge case.

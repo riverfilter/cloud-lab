@@ -74,6 +74,22 @@ resource "azuread_application" "mgmt_vm" {
 
   display_name = "${var.cluster_name}-mgmt-vm"
 
+  # Runbook: cluster_name rotation verification (proj_roadmap.md "### 33.")
+  #
+  # The CBD chain below (App -> SP -> FedCred -> RA, each with
+  # create_before_destroy = true) prevents an auth-gap window when
+  # `var.cluster_name` changes and forces the App's display_name to roll.
+  # The chain is correct on inspection and `terraform validate`, but
+  # Terraform's actual plan order can only be confirmed empirically.
+  #
+  # ON THE NEXT cluster_name RENAME: capture `terraform plan` output
+  # BEFORE applying. Expected order (no auth-gap):
+  #   create new App -> SP -> FedCred -> RA, then
+  #   destroy old RA  -> FedCred -> SP  -> App.
+  # If plan shows destroy-then-create on ANY link, abort the apply and
+  # revisit P0#1.6 — the chain has a missed CBD edge or a non-CBD-
+  # compatible attribute somewhere.
+  #
   # Destroy-then-recreate of this App (e.g. on a cluster_name rename) would
   # otherwise leave a window where the federated credential and role
   # assignment are both gone, locking the mgmt VM out of AKS for the

@@ -46,77 +46,31 @@ intentionally NOT marked as bugs — each is a defensible default with a
 documented escape hatch. Decide and act when (or if) the trade
 matters.
 
-### A. Item 33 — verify CBD chain on first `cluster_name` rename
+### A. Item 33 — verify CBD chain on first `cluster_name` rename — DOC HALF CLOSED
 
-**Context.** P0#1.6 propagated `lifecycle { create_before_destroy =
-true }` through the AAD chain (App → SP → FedCred → role assignment)
-in `azure-aks-tf/iam.tf`. The intended plan order on a `cluster_name`
-rename is *create-new-everything → destroy-old-everything* — no
-auth-gap window. Source review and `terraform validate` are clean,
-but Terraform's actual plan order can only be confirmed against a
-real rename.
+**Status (2026-05-06).** Documentation half closed. Runbook comment
+block now lives at `azure-aks-tf/iam.tf:77-100` and a `## Runbooks`
+section in `azure-aks-tf/README.md` cross-links to it and to the
+roadmap entry. Empirical confirmation still owed; left here so the
+operator who eventually performs a `cluster_name` rename actually
+captures `terraform plan` and confirms the CBD order. See "### 33."
+below for the full runbook content.
 
-**What to do.** Nothing right now. The next time you rename a
-`cluster_name` (e.g. promote `dev` → `prod`, test the rotation, or
-edit one character to force a re-plan), capture
-`terraform plan` output BEFORE applying. Confirm the order matches
-the description in P0#1.6's status entry. If the plan shows a
-destroy-then-create on any link in the chain, revisit P0#1.6 — the
-chain has a missed CBD edge or a non-CBD-compatible attribute.
+### B. Item 40 — commit the new `bootstrap-state/{aws,gcp}/.terraform.lock.hcl` — CLOSED
 
-**No-action mode is fine.** The chain is correct on inspection and
-on `terraform validate`; this is empirical confirmation, not bug
-hunting.
+**Status (2026-05-06).** Closed. Both lock files are tracked in HEAD
+(committed in `b28f015 mvp`); constraint strings match each stack's
+`versions.tf` (`~> 5.80` AWS, `~> 6.12` GCP). No further action needed.
+See "### 40." below.
 
-### B. Item 40 — commit the new `bootstrap-state/{aws,gcp}/.terraform.lock.hcl`
+### C. Item 42 — GKE `node_config.labels` parity with the AKS sub-item fix — CLOSED
 
-**Context.** Round 3 generated lock files for `bootstrap-state/aws/`
-and `bootstrap-state/gcp/` (`hashicorp/aws 5.100.0` and
-`hashicorp/google 6.50.0`, both within `versions.tf` constraints).
-They are currently untracked because committing files is an
-operator-policy decision the orchestrator deliberately does not make
-unilaterally.
-
-**Trade-off.**
-- **Commit them** — every operator gets the same provider versions on
-  first init; matches `bootstrap-state/azure/.terraform.lock.hcl` and
-  the cluster-stack convention. This is the lab's existing pattern
-  and the recommended choice.
-- **Gitignore them** — gives up reproducibility; only justified if the
-  lab routinely tolerates provider drift, which it doesn't (every
-  other stack commits lock files). Anti-pattern here.
-
-**What to do.** Run `git add bootstrap-state/aws/.terraform.lock.hcl
-bootstrap-state/gcp/.terraform.lock.hcl` and commit alongside the next
-batch of changes. One-liner with no functional risk; aligns the three
-bootstrap-state siblings.
-
-### C. Item 42 — GKE `node_config.labels` parity with the AKS sub-item fix
-
-**Context.** P2#11's sub-item just removed `var.tags` from AKS
-`node_labels` so resource-tag semantics don't leak into Kubernetes
-node labels. GKE has the same shape: `gcp-gke-tf/gke.tf:163` does
-`node_config.labels = var.labels`, and in the GKE provider
-`node_config.labels` ARE Kubernetes node labels (GCE instance labels
-are set on the underlying MIG, not here). So `var.labels` defaults
-like `environment=lab` are scheduler-visible on GKE nodes today.
-
-**Trade-off.**
-- **Option (a) — split `var.labels` into `var.node_labels`.** Adds an
-  operator-overridable Kubernetes-label input alongside the existing
-  resource-tag map. More flexible, more variables.
-- **Option (b) — hardcode the literal map.** Replace
-  `node_config.labels = var.labels` with `node_config.labels = {
-  "lab.purpose" = "security-research" }` matching the AKS shape.
-  Simpler, loses operator-overridability of node labels.
-
-**What to do.** Default recommendation: option (b) for symmetry with
-the AKS resolution. Operator note: existing GKE clusters will roll
-their node pool on next apply to drop tag-derived labels. Drain
-workloads first.
-
-If you want option (b) implemented now, ask the orchestrator to
-launch an agent.
+**Status (2026-05-06).** Closed via option (b). `gcp-gke-tf/gke.tf:168`
+is now a literal map `{ "lab.purpose" = "security-research" }`
+matching the AKS shape; `var.labels` retained for `resource_labels` at
+`gke.tf:63`. `terraform validate` clean. Operator warning carried
+forward to item E below: existing GKE clusters roll their node pool on
+next apply to drop tag-derived labels. See "### 42." below.
 
 ### D. P2#12 — `enable_flow_logs` variable for `azure-aks-tf`
 
@@ -183,14 +137,27 @@ sessions — is in place end-to-end. **All 11 originally-blocking items
 across Items 1-5 and the P0-checklist are now closed; the legacy P0
 follow-up sections have 0 unchecked boxes remaining** (down from 26
 after the 2026-04-27 multi-pass hardening sweep). Items 31-42 (added
-during the sweep as new findings) carry their own status: 9 closed
-(Items 31-32, 34-39, 41 — code/doc fixes shipped), 1 deferred-
-operational (Item 33 — verifies on next `cluster_name` rename, no code
-needed), 1 partial (Item 40 — lock files generated, commit decision
-left to operator), 1 open (Item 42 — GKE node_config.labels parity
-with AKS P2#11 sub-item, surfaced during Round 4 review). P2#11
-sub-item and P2#17 (gcp-gke-tf/roadmap.md) also shipped in Round 4.
-Remaining items are quality polish rather than functional gaps.
+during the sweep as new findings) carry their own status: 11 closed
+(Items 31-32, 34-42 — code/doc fixes shipped through 2026-05-06,
+including Item 40 lockfile commit, Item 42 GKE node_label parity, and
+Item 33 documentation half), 1 deferred-operational (Item 33's
+empirical-verification half, owed on the next real `cluster_name`
+rename — runbook now embedded in `azure-aks-tf/iam.tf` so the operator
+won't miss it). P2#11 sub-item and P2#17 (gcp-gke-tf/roadmap.md) also
+shipped in Round 4. Items 43-44 (added 2026-05-06 from P0-handsfree
+review) are open operational-polish entries: `TimeoutStartSec` on
+`mgmt-bootstrap-watch.service` and journald visibility for
+watch-driven bootstrap re-runs. Remaining items are quality polish
+rather than functional gaps.
+
+**P0-handsfree milestone** (see section below): default path Done
+(4/4 items, 2026-05-06) — periodic `refresh-kubeconfigs` timer,
+metadata-watching `mgmt-bootstrap-watch` auto-rerun, `make
+refresh-from-states` for the second-pass mgmt-tf re-apply, and the
+token/refresh cadence comment. Latency target met: working
+`kubectl <ctx>` within 15 minutes of a new cluster apply, with one
+operator command. Stretch item (convention-named-role discovery)
+remains pending — gated on operator decision.
 
 This is the headline arc. Everything under this section exists to
 make a single command — `refresh-kubeconfigs` on the mgmt VM —
@@ -1100,6 +1067,186 @@ done
 
 Tracked as a task under P0-checklist's "gcp-management-tf"
 (extend `azure_federated_apps` shape + refresh loop).
+
+### P0-handsfree. Hands-free kubeconfig refresh after a new cluster apply
+
+**Status: default path Done (4/4 items closed 2026-05-06); stretch item still pending. Latency target met: working `kubectl <ctx>` within 15 minutes of `terraform apply` of any new EKS/AKS/GKE stack, with one operator command (`make refresh-from-states` from `gcp-management-tf/`) — no SSH to the mgmt VM and no manual `bootstrap.sh` rerun. The 15-min ceiling is the sum of bootstrap-watch's 5-min poll cadence and refresh-kubeconfigs's 10-min cadence; both timers run continuously on the VM. Reviewer surfaced two operational-polish follow-ups (items 43-44 below) that do not affect the headline target.**
+
+**Decision record.** Today the new-cluster pickup path is four manual steps (cluster `apply` → mgmt-tf re-apply → SSH + bootstrap rerun → `refresh-kubeconfigs`). Seven options were weighed:
+
+1. **Periodic `refresh-kubeconfigs` via systemd timer.** Trivial; covers GKE perfectly because GKE discovery is zero-config (just `gcloud projects list` per `bootstrap.sh.tpl:962-1008`). For EKS/AKS it only helps if `/etc/mgmt/federated-principals.json` already lists the principal. **Kept** as the floor.
+2. **Convention-named-role discovery without pre-known principals.** Iterate a `trusted_aws_accounts` / `trusted_azure_subscriptions` list, attempt `assume-role-with-web-identity` against `mgmt-vm-${account}` and equivalent AAD App. Removes the mgmt-tf re-apply entirely, but couples cluster stacks to a naming convention and bypasses the explicit allowlist that today gates which roles the VM trusts. **Kept** as a stretch goal — the trust contract is load-bearing for a security-research lab.
+3. **Eventarc/EventBridge/EventGrid → mgmt-VM webhook.** Three brokers, three IAM grants, an HTTPS listener on the VM. **Rejected** — operating principle (2) ("design decisions that 'feel prod-shaped' are anti-features here") explicitly forbids this footprint for a 1-2-user lab.
+4. **Cluster-stack `local-exec` push.** Near-zero latency, but each cluster stack now needs auth into the GCP project and a write surface on the VM, violating the "mgmt-tf is the anchor; cluster stacks are clients" principle. **Rejected** as a default. The GCS-object variant (cluster stack writes to a shared object the VM polls) is the same cost as option 5(c) below without its idempotence properties. **Rejected.**
+5. **Bootstrap re-execution after metadata update.** (a) Hash-poll metadata and re-run `bootstrap.sh` on change. (b) `gcloud compute instances reset` from mgmt-tf (30-60s outage on every apply). (c) Render `federated-principals.json` to GCS, poll. **Kept** option (a) — the running VM doesn't re-execute `metadata.startup-script` after `gcp-management-tf/modules/mgmt-vm/main.tf:61` changes, and (a) is the cheapest closure of that gap.
+6. **`refresh-kubeconfigs --watch`.** Same surface as a systemd timer. **Folded** into item 1.
+7. **Token/refresh interplay.** GCP ID token timer fires every 50 min (`bootstrap.sh.tpl:501`). A 10-min refresh cadence will sometimes run mid-token-rotation. Documented below.
+
+Default path is items 1 + 5(a), implementable in <300 lines of bash + Terraform, confined entirely to `gcp-management-tf`. Stretch is item 2.
+
+- [x] **Systemd timer for `refresh-kubeconfigs` on the mgmt VM.**
+      **Why it matters.** GKE auto-discovery already works without any
+      Terraform side-effect (the `gcloud projects list` × `gcloud
+      container clusters list` loop at `bootstrap.sh.tpl:963-1008` finds
+      anything the SA can see). A new GKE stack today still requires
+      operator SSH only because nothing schedules the script. For
+      EKS/AKS, a timer also eliminates the manual `refresh-kubeconfigs`
+      step once principals exist in `/etc/mgmt/federated-principals.json`.
+      **Proposed fix.** Add a `mgmt-refresh-kubeconfigs.{service,timer}`
+      pair in phase 9 of `gcp-management-tf/scripts/bootstrap.sh.tpl`
+      (immediately after the `chmod 0755 /usr/local/bin/refresh-kubeconfigs`
+      at `bootstrap.sh.tpl:1202`, before the prime-on-first-boot block at
+      `bootstrap.sh.tpl:1206-1211`). `OnBootSec=2min`,
+      `OnUnitActiveSec=10min`, `Persistent=true`, runs as the persona
+      user via `User=${vm_username}`/`Group=${PERSONA_GROUP}`. Output to
+      journald only — no log spam in `~`. Complexity: ~40 lines of bash
+      heredoc. Latency: ≤10 min for GKE; ≤10 min for EKS/AKS once the
+      principal lands. Blast radius if it fails: loud — `systemctl status
+      mgmt-refresh-kubeconfigs.timer` shows the failure; existing
+      contexts are unaffected because `refresh-kubeconfigs` only adds.
+      Idempotence: trivially safe under destroy/re-apply (timer is owned
+      by mgmt-tf, not the cluster stacks). No cluster-stack changes.
+      **Status: Done (2026-05-06).** Service + timer pair written into
+      `bootstrap.sh.tpl` phase 9 (rendered units land at
+      `/etc/systemd/system/mgmt-refresh-kubeconfigs.{service,timer}`)
+      with `User=$${VM_USER}` / `Group=$${PERSONA_GROUP}`,
+      `Environment=KUBECONFIG=/home/$${VM_USER}/.kube/config`,
+      `OnBootSec=2min`, `OnUnitActiveSec=10min`, `Persistent=true`,
+      `After=network-online.target mgmt-gcp-id-token.service`. Verified
+      by template render + `bash -n` clean.
+
+- [x] **Auto-rerun `bootstrap.sh` when mgmt-tf re-renders the startup
+      script.** **Why it matters.** Today, mgmt-tf re-apply only updates
+      `metadata.startup-script` on `gcp-management-tf/modules/mgmt-vm/main.tf:61`
+      — the running VM does NOT re-execute it, so `/etc/mgmt/federated-principals.json`
+      and `~/.aws/config` go stale until the operator runs `gcloud
+      compute instances describe ... | sudo bash` (or reboots). This is
+      the load-bearing reason the README documents that recipe.
+      **Proposed fix.** A second systemd timer
+      (`mgmt-bootstrap-watch.{service,timer}`, `OnUnitActiveSec=5min`)
+      that compares `sha256sum` of the current
+      `metadata/instance/attributes/startup-script` (fetched from the
+      metadata server with `Metadata-Flavor: Google` like the existing
+      `mgmt-write-id-token` writer at `bootstrap.sh.tpl:403-451`) against
+      a sentinel at `/var/lib/mgmt-bootstrap/startup-script.sha256`. On
+      mismatch: write the new script to `/etc/mgmt/bootstrap.sh`,
+      `bash /etc/mgmt/bootstrap.sh`, then update the sentinel. The
+      bootstrap is already idempotent and the phase-1 guardrails at
+      `bootstrap.sh.tpl:42-59` handle the apt-lock race. Complexity:
+      ~60 lines (writer + unit pair). Latency: ≤5 min from mgmt-tf
+      re-apply to fresh `federated-principals.json`. Blast radius: a
+      bootstrap failure mid-rerun is recoverable — the sentinel only
+      advances on success, so the next tick retries. Loud failure via
+      `journalctl -u mgmt-bootstrap-watch`. Idempotence: the sentinel is
+      durable across reboots and unaffected by cluster-stack
+      destroy/re-apply. No cluster-stack changes. Combined with the
+      previous item, total latency from a fresh EKS/AKS apply +
+      mgmt-tf re-apply is bounded at 5 + 10 = 15 min, hitting the
+      milestone target. **Status: Done (2026-05-06).**
+      `/usr/local/sbin/mgmt-bootstrap-watch` (~56 lines) +
+      `mgmt-bootstrap-watch.{service,timer}` written into phase 9.
+      Atomic semantics throughout: curl-to-`mktemp`, `mktemp`+`mv -f`
+      script install, `mktemp`+`mv -f` sentinel update. Sentinel only
+      advances when `bash /etc/mgmt/bootstrap.sh` returns 0; failure
+      surfaces as a non-zero unit exit (loud in journald) and the next
+      5-min tick retries. Sentinel pre-seed at end of phase 9 prevents
+      a thrashy first-tick rerun on freshly-applied VMs; metadata-fetch
+      failure during seeding is intentionally not seeded so the next
+      tick performs a real compare. `OnBootSec=3min` (staggered from
+      kubeconfig timer's 2min), `OnUnitActiveSec=5min`, `User=root`.
+      Recursive re-entry through phase 9's own `systemctl
+      enable/start` calls is a no-op on already-active units. See
+      follow-up items 43-44 for operational polish.
+
+- [x] **Auto-trigger mgmt-tf re-apply on cluster-stack remote-state
+      change.** **Why it matters.** `terraform_remote_state` data
+      sources at `gcp-management-tf/remote_states.tf:32-55` only refresh
+      at plan-time of mgmt-tf — they do not auto-trigger. Without this
+      rung the operator still has to run `terraform apply` in
+      `gcp-management-tf` after each cluster apply to land the new
+      principal in `local.aws_role_arns_effective` /
+      `local.azure_federated_apps_effective` (`gcp-management-tf/main.tf:24-45`).
+      **Proposed fix.** Document the existing two-apply ergonomics in
+      `gcp-management-tf/README.md` and add a `make refresh-from-states`
+      target (Makefile already exists per the repo listing) that runs
+      `terraform -chdir=gcp-management-tf apply -refresh-only -auto-approve`
+      followed by a normal `apply`. This is a 10-line Makefile change,
+      not a Terraform change. Operators (or a wrapper script in `~/dotfiles`)
+      run `make refresh-from-states` once after cluster-stack applies;
+      everything downstream is automated by the previous two items.
+      Latency contribution: the two-apply step is fast (refresh-only
+      plus a no-op apply on the VM resource — startup-script delta only,
+      no replacement per the `lifecycle` block at
+      `gcp-management-tf/modules/mgmt-vm/main.tf:75-80`). Idempotence:
+      `-refresh-only` is by definition. No cluster-stack changes.
+      **Status: Done (2026-05-06).** `gcp-management-tf/Makefile`
+      gained a `refresh-from-states` target (in `.PHONY`, listed in the
+      help banner) running `terraform apply -refresh-only -auto-approve`
+      then `terraform apply -auto-approve`, both with the existing
+      `-var-file=$(TFVARS)`. Header comment explicitly notes the
+      `-auto-approve` divergence from the regular `apply` target so the
+      caller knows what they're opting into. README's "Cross-stack apply
+      order" + new "Picking up a new cluster" subsection document the
+      end-to-end flow (cluster apply → `make refresh-from-states` →
+      bootstrap-watch detects in ≤5min → refresh-kubeconfigs timer in
+      ≤10 more min = 15-min upper bound).
+
+- [x] **Document the 50-min token / 10-min refresh interplay.**
+      **Why it matters.** `mgmt-gcp-id-token.timer` rotates the GCP ID
+      token every 50 min (`bootstrap.sh.tpl:493-507`). The new
+      `refresh-kubeconfigs` timer fires every 10 min. Five out of every
+      six refresh ticks read a stable token; one runs within seconds of
+      a rotation. The writer at `bootstrap.sh.tpl:417-449` is atomic
+      (`mktemp` + `mv -f`), and the AWS SDK / kubelogin re-read the file
+      on every call — but `aws eks list-clusters` and `az login` inside
+      `refresh-kubeconfigs` open longer-lived sessions. If a session
+      starts at T-1s before rotation, the cached STS credentials remain
+      valid for `duration_seconds = 3600` (`bootstrap.sh.tpl:543`);
+      `az login --federated-token-file` likewise mints a session that
+      outlives the source token. There is no race today. **Proposed
+      fix.** Add a comment block at the new
+      `mgmt-refresh-kubeconfigs.timer` definition pointing at the 50-min
+      timer and stating "refresh cadence is intentionally non-aligned;
+      atomic writer at `bootstrap.sh.tpl:417` plus 1h STS/AAD session
+      lifetimes mean rotation-edge ticks are safe." Two-line code
+      comment; zero behavioural change. **Status: Done (2026-05-06).**
+      Comment block folded into the `[Unit]` description of
+      `mgmt-refresh-kubeconfigs.timer` (rendered immediately above the
+      timer's `[Timer]` stanza in phase 9), citing the 50-min token
+      timer location, the atomic writer at `:417`, the 1h STS lifetime
+      at `:543`, and the rotation-edge-safety claim.
+
+- [ ] **(Stretch) Convention-named-role discovery for hands-free
+      cluster-stack pickup with no mgmt-tf re-apply.** **Why it matters.**
+      The previous four items reduce operator action to "apply cluster
+      stack, run `make refresh-from-states`." Eliminating the
+      `make refresh-from-states` step requires the VM to discover roles
+      it was not told about. **Proposed fix.** Two new mgmt-tf vars,
+      `trusted_aws_accounts` (list of account IDs) and
+      `trusted_azure_tenants` (list of tenant IDs), rendered into
+      `federated-principals.json` alongside today's `aws_role_arns` /
+      `azure_federated_apps` maps. `refresh-kubeconfigs` gets a third
+      discovery loop per cloud: for each trusted account, attempt
+      `aws sts assume-role-with-web-identity --role-arn
+      arn:aws:iam::<acct>:role/mgmt-vm-federated --web-identity-token-file
+      /var/run/mgmt/gcp-id-token-aws`; on success, run the existing EKS
+      enumeration. Same shape for Azure with `az login --service-principal
+      --username <conventional-app-name>` per tenant. Cluster stacks
+      then commit to the convention by setting
+      `cluster_name = "mgmt-vm"` on their IAM role / AAD App, OR a
+      dedicated `aws-eks-tf` / `azure-aks-tf` variable pins the
+      convention name. Complexity: ~120 bash lines plus ~30 Terraform
+      lines per cluster stack — pushes total over the 300-line ceiling,
+      hence stretch. Latency: ≤10 min, no second apply needed. Blast
+      radius: a misconfigured trusted account silently widens the trust
+      surface — adversarial against operating principle (2)'s "tiny and
+      intermittent" framing. Idempotence: clean (the VM probes; absence
+      of a role is an error the discovery loop catches and ignores).
+      Requires changes to cluster stacks (the convention name).
+      **Status: pending — gated on operator decision that the
+      convention coupling is worth eliminating one `make` invocation.**
+
+Files referenced in this section: `gcp-management-tf/scripts/bootstrap.sh.tpl` (phases 8-9, lines 350-1211), `gcp-management-tf/main.tf:24-45` (effective-map locals), `gcp-management-tf/modules/mgmt-vm/main.tf:55-80` (metadata + lifecycle), `gcp-management-tf/remote_states.tf:32-55` (cross-stack data sources), `gcp-management-tf/Makefile` (new `refresh-from-states` target).
 
 ### P0 Item 1 — follow-up from implementation review
 
@@ -2272,14 +2419,15 @@ P1.
 ### 33. `create_before_destroy` on AAD chain — verify on first
        `cluster_name` rename
 
-**Status:** Deferred to first real rename. The chain is correct in
-theory and `terraform validate` is clean across all the CBD'd
-resources, but empirical confirmation requires a real `cluster_name`
-edit + `terraform plan` capture. This is an operational verification
-task, not a code task — no implementation can close it. Filed here as
-a permanent "verify next time the situation arises" note so future
-maintainers know to capture the plan output and confirm the order
-described in P0#1.6's status entry.
+**Status:** Deferred to first real rename — documentation half closed.
+Runbook comment block added at `azure-aks-tf/iam.tf:77-100` above
+`azuread_application.mgmt_vm` covering all four CBD links and the abort
+criterion; `azure-aks-tf/README.md` gained a `## Runbooks` section
+cross-linking iam.tf and this roadmap entry. Empirical verification
+still owed on the next `cluster_name` edit; capture `terraform plan` and
+confirm the create-new-App → SP → FedCred → RA → destroy-old-RA →
+FedCred → SP → App order. Deferred-decision item A closed for the
+documentation half.
 
 **Why it matters.** P0#1.6 propagated `lifecycle {
 create_before_destroy = true }` through the AAD chain (App → SP →
@@ -2474,14 +2622,12 @@ Strictly defensive; one-character regex change. Low priority.
 
 ### 40. `.terraform.lock.hcl` consistency across `bootstrap-state/` siblings
 
-**Status:** Lock files generated; commit decision deferred. `terraform
-init -backend=false` run in `bootstrap-state/aws/` and `bootstrap-state/gcp/`
-generated `.terraform.lock.hcl` files (pinning `hashicorp/aws 5.100.0`
-and `hashicorp/google 6.50.0` respectively, both compatible with their
-`versions.tf` constraints). Files left untracked in working tree pending
-operator commit decision (this orchestration session does not commit
-files). The remaining work is one `git add` to align with the existing
-committed `bootstrap-state/azure/.terraform.lock.hcl`.
+**Status:** Done. Verified the AWS and GCP lock files were committed to
+HEAD as part of the prior `b28f015 mvp` commit (`hashicorp/aws 5.100.0`
+constraint `~> 5.80`, `hashicorp/google 6.50.0` constraint `~> 6.12`);
+constraint strings match each stack's `versions.tf`. Sibling
+`bootstrap-state/azure/.terraform.lock.hcl` (`hashicorp/azurerm 4.70.0`,
+constraint `~> 4.14`) is coherent. Deferred-decision item B closed.
 
 **Why it matters.** `bootstrap-state/azure/.terraform.lock.hcl` is
 committed; `bootstrap-state/aws/` and `bootstrap-state/gcp/` don't
@@ -2547,6 +2693,14 @@ explicit-path refactor. Low priority.
 
 ### 42. GKE `node_config.labels = var.labels` leaks tag semantics into Kubernetes node labels
 
+**Status:** Done. `node_config.labels` at `gcp-gke-tf/gke.tf:168`
+replaced with literal map `{ "lab.purpose" = "security-research" }`
+matching the AKS resolution from P2#11 sub-item; `var.labels` retained
+for `resource_labels` at `gke.tf:63`; `terraform validate` clean.
+Operator note: existing GKE clusters roll the node pool on next apply
+to drop tag-derived labels — drain workloads first. Deferred-decision
+item C closed (option (b) chosen).
+
 **Why it matters.** P2#11's sub-item fixed the analogous AKS leak
 (`node_labels = merge(var.tags, ...)`). GKE has the same shape at
 `gcp-gke-tf/gke.tf:163` — `google_container_node_pool.node_config.labels
@@ -2574,6 +2728,57 @@ Default to option (b) for symmetry with the AKS resolution.
 **Operator note.** As with the AKS fix, existing GKE clusters applied
 with the old shape will roll their node pool on the next apply to
 drop tag-derived labels. Drain workloads before applying.
+
+### 43. `mgmt-bootstrap-watch.service` lacks `TimeoutStartSec`
+
+**Status:** Open. Surfaced during P0-handsfree review on 2026-05-06.
+
+**Why it matters.** The watch service in `bootstrap.sh.tpl` phase 9
+re-execs `bash /etc/mgmt/bootstrap.sh` inline. systemd's
+`DefaultTimeoutStartSec` on Debian/Ubuntu is 90s. The bootstrap's
+phase-1 apt-lock guard alone can wait up to ~90s; a real apt run
+(upgrade + new package fetch + container pulls) on a slow VM exceeds
+that. systemd marks the unit `failed` in journald and the next 5-min
+tick retries — the system self-heals, but a `failed` line is
+cosmetically loud and could mask a real failure on a status
+dashboard.
+
+**Proposed fix.** Add `TimeoutStartSec=600` (or `infinity` if you
+prefer no ceiling) to the `[Service]` block of
+`mgmt-bootstrap-watch.service`'s heredoc. One-line change, no
+behavioural risk. Same posture for `mgmt-refresh-kubeconfigs.service`
+is optional — the refresh script is already bounded by per-call CLI
+timeouts (`aws --cli-connect-timeout`, `gcloud --quiet` defaults,
+`az` per-request timeouts).
+
+### 44. Bootstrap re-run output not visible under `journalctl -u mgmt-bootstrap-watch`
+
+**Status:** Open. Surfaced during P0-handsfree review on 2026-05-06.
+
+**Why it matters.** When the watch script calls
+`bash /etc/mgmt/bootstrap.sh`, the bootstrap's
+`exec > >(tee -a /var/log/mgmt-bootstrap.log) 2>&1` at
+`bootstrap.sh.tpl:32-35` redirects all subsequent output away from
+systemd's journal. `journalctl -u mgmt-bootstrap-watch` therefore
+shows only the brief watch-script preamble (the "[mgmt-bootstrap-watch]
+startup-script changed (sha256 OLD -> NEW)" marker), not the actual
+re-run details. Operators debugging a stuck or failing re-run will
+look at the unit journal first and conclude nothing happened, then
+have to know to read `/var/log/mgmt-bootstrap.log` instead.
+
+**Proposed fix.** Two options:
+- **(a) Tee to both.** Detect when the bootstrap is invoked under a
+  systemd unit (`[[ -n "$JOURNAL_STREAM" ]]`) and skip the file-only
+  redirect, letting systemd capture stdout/stderr while keeping the
+  log file for direct-invocation paths. ~5 lines around the existing
+  redirect.
+- **(b) Document.** Add a sentence to `gcp-management-tf/README.md`
+  "Inspecting the bootstrap" section noting that watch-driven re-runs
+  log to `/var/log/mgmt-bootstrap.log`, not the unit journal.
+
+Default to (a) — operators look at journald first and the
+detect-and-skip is cheap. (b) is a fallback if (a) introduces
+duplicate-output noise on direct invocation.
 
 ---
 
