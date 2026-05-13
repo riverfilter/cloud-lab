@@ -1,7 +1,7 @@
 # GCP Management VM
 
 Terraform stack that provisions a Debian 12 jump box on GCE for operator use:
-Terraform, kubectl, gcloud, Docker, Python, Helm, k9s, and friends. The VM's
+Terraform, kubectl, gcloud, Docker, Python, Helm, k9s, etc. The VM's
 service account holds read-only discovery rights across the org so
 `refresh-kubeconfigs` can pull credentials for every GKE cluster the
 operator can see, without copying any keys.
